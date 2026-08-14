@@ -156,6 +156,8 @@ export function getMockResponse(
   
   const userMessages = messages.filter(m => m.role === 'user');
   const turn = userMessages.length;
+  const latestAnswer = userMessages[userMessages.length - 1]?.content.trim() || '';
+  const answerHasEvidence = /\d|because|report|demand|share|sales|margin|stock|cost|cash|customer|compet/i.test(latestAnswer);
 
   if (mode === 'verbal-assessment') {
     const lastAnswer = userMessages[userMessages.length - 1]?.content.trim() || '';
@@ -244,7 +246,9 @@ export function getMockResponse(
     if (turn === 1) {
       return {
         cxo: 'CEO',
-        content: `I've reviewed your strategic setup for the '${decisions.targetSegment}' segment. You've allocated $${(decisions.marketingBudget / 1000000).toFixed(1)}M to marketing and set pricing at $${decisions.pricing}. Walk me through the positioning logic—how does this make us competitive?`
+        content: answerHasEvidence
+          ? `You have started to connect your strategy to evidence. What customer outcome makes the ${decisions.targetSegment} position worth the price and marketing investment, and what result would tell you the position is failing?`
+          : `I hear the strategic intent, but the board needs a defensible basis. What report result or customer signal supports the ${decisions.targetSegment} position, and what trade-off are you accepting to pursue it?`
       };
     }
     if (turn === 2) {

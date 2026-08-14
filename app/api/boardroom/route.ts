@@ -1,90 +1,130 @@
 import { NextResponse } from 'next/server';
 import { BoardroomMode, getBoardroomSystemPrompt, getMockResponse, Message, SimulationDecisions } from '@/lib/abis-engine';
+import { buildConversationContents, getConversationGuardrails, guardConversationResponse } from '@/lib/conversation-orchestrator';
+import { evaluateLearningProgress, getAdaptiveLearningGuidance } from '@/lib/adaptive-learning';
 
 export async function POST(request: Request) {
   try {
-    const { messages, decisions, stage, customApiKey, mode = 'impact-review', courseTopics = [] } = await request.json() as {
+    const { messages, decisions, stage, customApiKey, aiProvider = 'gemini', mode = 'impact-review', courseTopics = [] } = await request.json() as {
       messages: Message[];
       decisions: SimulationDecisions;
       stage: 'awareness' | 'discovery' | 'refinement' | 'completed';
       customApiKey?: string;
+      aiProvider?: 'gemini' | 'openai' | 'anthropic';
       mode?: BoardroomMode;
       courseTopics?: string[];
     };
 
-    const apiKey = customApiKey || process.env.GEMINI_API_KEY;
+    if (!Array.isArray(messages) || !decisions || !stage) {
+      return NextResponse.json({ error: 'A conversation, simulation decisions, and dialogue stage are required.' }, { status: 400 });
+    }
 
-    // Fall back to Mock engine if no API key is present
-    if (!apiKey) {
-      console.log('No Gemini API Key found. Falling back to Mock Boardroom engine.');
+    const apiKey = customApiKey?.trim() || (aiProvider === 'openai' ? process.env.OPENAI_API_KEY : aiProvider === 'anthropic' ? process.env.ANTHROPIC_API_KEY : process.env.GEMINI_API_KEY);
+
+    const mockResponse = (providerError?: string) => {
       const mock = getMockResponse(decisions, messages, stage, mode, courseTopics);
+      const learningProgress = evaluateLearningProgress(messages);
       return NextResponse.json({
         role: 'assistant',
         cxo: mock.cxo,
         content: mock.content,
         nextStage: mock.nextStage,
-        isMocked: true
+        learningProgress,
+        isMocked: true,
+        ...(providerError ? { providerError } : {})
       });
+    };
+
+    // Fall back to Mock engine if no API key is present
+    if (!apiKey) {
+      console.log('No AI provider key found. Falling back to Mock Boardroom engine.');
+      const keyName = aiProvider === 'openai' ? 'OPENAI_API_KEY' : aiProvider === 'anthropic' ? 'ANTHROPIC_API_KEY' : 'GEMINI_API_KEY';
+      return mockResponse(`Real chat is not configured. Add ${keyName} to the Vercel project environment variables, or connect a valid ${aiProvider} key in the app settings.`);
     }
 
-    const systemPrompt = getBoardroomSystemPrompt(decisions, stage === 'completed' ? 'refinement' : stage, mode, courseTopics);
+    const promptStage = stage === 'completed' ? 'refinement' : stage;
+    const learningProgress = evaluateLearningProgress(messages);
+    const systemPrompt = `${getBoardroomSystemPrompt(decisions, promptStage, mode, courseTopics)}${getConversationGuardrails(mode, stage)}${getAdaptiveLearningGuidance(learningProgress, mode)}`;
+    const contents = buildConversationContents(messages);
 
-    // Map conversation history to Gemini format (user vs model)
-    const contents = messages
-      .filter(m => m.role === 'user' || m.role === 'assistant')
-      .map(m => ({
-        role: m.role === 'assistant' ? 'model' : 'user',
-        parts: [{ text: m.cxo ? `[${m.cxo}] ${m.content}` : m.content }]
-      }));
+    let response: Response;
+    let text: string | undefined;
 
-    // Call Gemini API
-    const response = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`,
-      {
+    if (aiProvider === 'openai') {
+      response = await fetch('https://api.openai.com/v1/chat/completions', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
+          Authorization: `Bearer ${apiKey}`,
         },
         body: JSON.stringify({
-          systemInstruction: {
-            parts: [{ text: systemPrompt }]
-          },
-          contents,
-          generationConfig: {
-            temperature: 0.4,
-            maxOutputTokens: 500,
-          }
+          model: 'gpt-4o-mini',
+          messages: [{ role: 'system', content: systemPrompt }, ...messages.map(message => ({ role: message.role === 'assistant' ? 'assistant' : 'user', content: message.content }))],
+          temperature: 0.4,
+          max_tokens: 500,
         }),
+      });
+      if (response.ok) {
+        const data = await response.json();
+        text = data.choices?.[0]?.message?.content?.trim();
       }
-    );
+    } else if (aiProvider === 'anthropic') {
+      const anthropicMessages = messages.length
+        ? messages.map(message => ({ role: message.role === 'assistant' ? 'assistant' as const : 'user' as const, content: message.content }))
+        : [{ role: 'user' as const, content: courseTopics[0] || 'Begin the Socratic coaching conversation with one thoughtful question.' }];
+      response = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' },
+        body: JSON.stringify({
+          model: 'claude-3-5-haiku-latest',
+          system: systemPrompt,
+          messages: anthropicMessages,
+          temperature: 0.4,
+          max_tokens: 500,
+        }),
+      });
+      if (response.ok) {
+        const data = await response.json();
+        text = data.content?.[0]?.text?.trim();
+      }
+    } else {
+      response = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            systemInstruction: { parts: [{ text: systemPrompt }] },
+            contents,
+            generationConfig: { temperature: 0.4, maxOutputTokens: 500 }
+          }),
+        }
+      );
+      if (response.ok) {
+        const data = await response.json();
+        text = data.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
+      }
+    }
 
     if (!response.ok) {
       const errText = await response.text();
-      throw new Error(`Gemini API Error: ${response.statusText} - ${errText}`);
+      console.error(`${aiProvider} API Error: ${response.status} ${response.statusText} - ${errText}`);
+      // A temporary provider/configuration failure should never end a student
+      // session. Keep the conversation moving with the local coach instead.
+      return mockResponse(`${aiProvider} is unavailable (${response.status}). Using the local conversation engine.`);
     }
 
-    const data = await response.json();
-    const text = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
+    if (!text) {
+      console.error(`${aiProvider} returned no usable response.`);
+      return mockResponse(`${aiProvider} returned an empty response. Using the local conversation engine.`);
+    }
 
-    // Parse the CXO speaking from the prefix (e.g., "[CEO] Walk me through...")
-    let cxo: 'CEO' | 'CFO' | 'CMO' | 'COO' = 'CEO';
-    let cleanContent = text.trim();
-
-    const match = cleanContent.match(/^\[(CEO|CFO|CMO|COO)\]\s*([\s\S]*)/);
-    if (match) {
-      cxo = match[1] as 'CEO' | 'CFO' | 'CMO' | 'COO';
-      cleanContent = match[2];
-    } else {
-      // Fallback detection
-      if (cleanContent.toLowerCase().includes('ceo') || cleanContent.toLowerCase().includes('chief executive')) {
-        cxo = 'CEO';
-      } else if (cleanContent.toLowerCase().includes('cfo') || cleanContent.toLowerCase().includes('finance') || cleanContent.toLowerCase().includes('margin')) {
-        cxo = 'CFO';
-      } else if (cleanContent.toLowerCase().includes('cmo') || cleanContent.toLowerCase().includes('marketing') || cleanContent.toLowerCase().includes('brand')) {
-        cxo = 'CMO';
-      } else if (cleanContent.toLowerCase().includes('coo') || cleanContent.toLowerCase().includes('operation') || cleanContent.toLowerCase().includes('capacity')) {
-        cxo = 'COO';
-      }
+    // Do not render a model response until the orchestration layer has checked
+    // the role, format, length, and single-question conversation contract.
+    const guardedResponse = guardConversationResponse(text, mode, stage);
+    if (!guardedResponse.accepted) {
+      console.error(`${aiProvider} response blocked by conversation guardrails: ${guardedResponse.reason}`);
+      return mockResponse(`${aiProvider} returned a response outside the boardroom conversation rules. Using the local conversation engine.`);
     }
 
     // Dialogue State progression triggers based on turn count or context
@@ -103,9 +143,10 @@ export async function POST(request: Request) {
 
     return NextResponse.json({
       role: 'assistant',
-      cxo,
-      content: cleanContent,
+      cxo: guardedResponse.cxo,
+      content: guardedResponse.content,
       nextStage,
+      learningProgress,
       isMocked: false
     });
 

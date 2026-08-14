@@ -28,9 +28,14 @@ import {
   BarChart3,
   Landmark,
   ClipboardCheck,
-  AlertTriangle
+  AlertTriangle,
+  ServerCog,
+  BrainCircuit,
+  MessageSquareText,
+  RotateCcw
 } from 'lucide-react';
 import { BoardroomMode, SimulationDecisions, Message, DEFAULT_DECISIONS, CXORole, evaluatePackagingDesign, PackagingEvaluationResult, generateOralQuestions, evaluateOralDefense, DefenseAssessmentResult } from '@/lib/abis-engine';
+import { evaluateLearningProgress, getAdaptiveSessionPlan, LearningSignal } from '@/lib/adaptive-learning';
 
 type BrowserSpeechRecognition = {
   continuous: boolean;
@@ -43,6 +48,15 @@ type BrowserSpeechRecognition = {
 };
 
 type BrowserSpeechRecognitionConstructor = new () => BrowserSpeechRecognition;
+
+type AiProvider = 'gemini' | 'openai' | 'anthropic';
+
+type AiGateway = {
+  provider: AiProvider;
+  geminiKey: string;
+  openaiKey: string;
+  anthropicKey: string;
+};
 
 export default function Home() {
   // Navigation
@@ -65,7 +79,10 @@ export default function Home() {
   const [credits, setCredits] = useState(4500);
   const [showBookingModal, setShowBookingModal] = useState(false);
   const [showSettingsModal, setShowSettingsModal] = useState(false);
-  const [customApiKey, setCustomApiKey] = useState('');
+  const [showBackendPasswordModal, setShowBackendPasswordModal] = useState(false);
+  const [backendPassword, setBackendPassword] = useState('');
+  const [backendPasswordError, setBackendPasswordError] = useState('');
+  const [aiGateway, setAiGateway] = useState<AiGateway>({ provider: 'gemini', geminiKey: '', openaiKey: '', anthropicKey: '' });
 
   // Simulation Decisions State
   const [decisions, setDecisions] = useState<SimulationDecisions>(DEFAULT_DECISIONS);
@@ -161,7 +178,31 @@ export default function Home() {
   const [decisionCoachLoading, setDecisionCoachLoading] = useState(false);
   const [inputVal, setInputVal] = useState('');
   const [loading, setLoading] = useState(false);
+  const [chatProviderNotice, setChatProviderNotice] = useState('');
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const customApiKey = aiGateway[`${aiGateway.provider}Key` as 'geminiKey' | 'openaiKey' | 'anthropicKey'];
+  const learningProgress = evaluateLearningProgress(messages);
+  const learningLabels: Record<LearningSignal, string> = { choice: 'Clear choice', evidence: 'Evidence', causality: 'Cause & effect', tradeoff: 'Trade-off', revision: 'Revision trigger' };
+  const assessmentWeights: Record<LearningSignal, number> = { choice: 20, evidence: 25, causality: 20, tradeoff: 20, revision: 15 };
+  const competencyScore = (Object.keys(assessmentWeights) as LearningSignal[]).reduce((total, signal) => total + (learningProgress.signals[signal] > 0 ? assessmentWeights[signal] : 0), 0);
+  const adaptiveSessionPlan = getAdaptiveSessionPlan(learningProgress);
+
+  const openBackend = () => {
+    setBackendPassword('');
+    setBackendPasswordError('');
+    setShowBackendPasswordModal(true);
+  };
+
+  const unlockBackend = (event: React.FormEvent) => {
+    event.preventDefault();
+    if (backendPassword === 'ECVJ22') {
+      setShowBackendPasswordModal(false);
+      setBackendPassword('');
+      setActiveMenu('backend-layer');
+      return;
+    }
+    setBackendPasswordError('Incorrect password. Please try again.');
+  };
 
   const impactScore = Math.round((impactPlan.people + impactPlan.planet + impactPlan.community + impactPlan.governance) / 4);
   const stakeholderMetrics = [
@@ -264,7 +305,7 @@ export default function Home() {
       const res = await fetch('/api/boardroom', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ messages: [], decisions, stage: 'awareness', customApiKey, mode: 'decision-help', courseTopics: [context] })
+        body: JSON.stringify({ messages: [], decisions, stage: 'awareness', customApiKey, aiProvider: aiGateway.provider, mode: 'decision-help', courseTopics: [context] })
       });
       const data = await res.json();
       if (data.error) throw new Error(data.error);
@@ -289,7 +330,7 @@ export default function Home() {
       const res = await fetch('/api/boardroom', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ messages: updatedMessages, decisions, stage: 'awareness', customApiKey, mode: 'decision-help', courseTopics: [decisionCoachContext] })
+        body: JSON.stringify({ messages: updatedMessages, decisions, stage: 'awareness', customApiKey, aiProvider: aiGateway.provider, mode: 'decision-help', courseTopics: [decisionCoachContext] })
       });
       const data = await res.json();
       if (data.error) throw new Error(data.error);
@@ -326,8 +367,18 @@ export default function Home() {
   };
 
   useEffect(() => {
-    const savedKey = localStorage.getItem('gemini_api_key');
-    if (savedKey) setCustomApiKey(savedKey);
+    const savedGateway = localStorage.getItem('abis_ai_gateway');
+    if (savedGateway) {
+      try {
+        const parsed = JSON.parse(savedGateway) as Partial<AiGateway>;
+        setAiGateway(current => ({ ...current, ...parsed }));
+      } catch {
+        // Keep an invalid saved preference from affecting the learning workspace.
+      }
+    } else {
+      const legacyGeminiKey = localStorage.getItem('gemini_api_key');
+      if (legacyGeminiKey) setAiGateway(current => ({ ...current, geminiKey: legacyGeminiKey }));
+    }
 
     const savedCredits = localStorage.getItem('abis_credits');
     if (savedCredits) setCredits(Number(savedCredits));
@@ -454,9 +505,8 @@ export default function Home() {
     });
   };
 
-  const saveApiKey = (key: string) => {
-    setCustomApiKey(key);
-    localStorage.setItem('gemini_api_key', key);
+  const saveAiGateway = () => {
+    localStorage.setItem('abis_ai_gateway', JSON.stringify(aiGateway));
     setShowSettingsModal(false);
   };
 
@@ -486,7 +536,7 @@ export default function Home() {
     try {
       const response = await fetch('/api/boardroom', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ messages: [], decisions, stage: 'awareness', customApiKey, mode: 'decision-help', courseTopics: [missionContext] })
+        body: JSON.stringify({ messages: [], decisions, stage: 'awareness', customApiKey, aiProvider: aiGateway.provider, mode: 'decision-help', courseTopics: [missionContext] })
       });
       const data = await response.json();
       if (data.error) throw new Error(data.error);
@@ -518,6 +568,7 @@ export default function Home() {
     // Set up initial session state
     setMessages([]);
     setActiveStage('awareness');
+    setChatProviderNotice('');
     setActiveMenu('boardroom-chat');
     setLoading(true);
 
@@ -530,6 +581,7 @@ export default function Home() {
           decisions,
           stage: 'awareness',
           customApiKey,
+          aiProvider: aiGateway.provider,
           mode: boardroomMode,
           courseTopics: []
         })
@@ -537,6 +589,7 @@ export default function Home() {
 
       const data = await res.json();
       if (data.error) throw new Error(data.error);
+      setChatProviderNotice(data.isMocked ? (data.providerError || 'Demo coach is active. Connect an AI provider for live responses.') : 'Live AI response active.');
 
       const introMsg: Message = {
         id: 'intro',
@@ -591,6 +644,7 @@ export default function Home() {
           decisions,
           stage: activeStage,
           customApiKey,
+          aiProvider: aiGateway.provider,
           mode: boardroomMode,
           courseTopics: []
         })
@@ -598,6 +652,7 @@ export default function Home() {
 
       const data = await res.json();
       if (data.error) throw new Error(data.error);
+      setChatProviderNotice(data.isMocked ? (data.providerError || 'Demo coach is active. Connect an AI provider for live responses.') : 'Live AI response active.');
 
       const aiMsg: Message = {
         id: `ai-${Date.now()}`,
@@ -860,6 +915,9 @@ export default function Home() {
                   >
                     Interrogate Strategy
                   </button>
+                  <button onClick={() => setActiveMenu('learning-dashboard')} className={`menu-item-btn ${activeMenu === 'learning-dashboard' ? 'active' : ''}`}>
+                    Conversation Learning
+                  </button>
                 </div>
               )}
             </div>
@@ -892,6 +950,9 @@ export default function Home() {
             >
               Final Check
             </button>
+            <button onClick={openBackend} className={`menu-item-btn backend-menu-button ${activeMenu === 'backend-layer' ? 'active' : ''}`} style={{ paddingLeft: '14px', fontWeight: 700 }}>
+              <ServerCog size={15} /> Backend
+            </button>
             <button onClick={() => finalChecksPassed === finalCheckItems.length ? alert('Quarter 4 decisions submitted successfully.') : setActiveMenu('final-check')} className="menu-item-btn" style={{ paddingLeft: '14px', color: 'white', fontWeight: 700 }}>Submit</button>
           </div>
         </aside>
@@ -922,7 +983,9 @@ export default function Home() {
               {activeMenu === 'final-check' && 'Strategic Oral Defense (Final Check)'}
               {activeMenu === 'boardroom-intro' && (boardroomMode === 'verbal-assessment' ? 'AI Socratic Verbal Assessment' : 'AI Boardroom Challenge')}
               {activeMenu === 'boardroom-chat' && (boardroomMode === 'verbal-assessment' ? `AI Verbal Assessment - ${activeStage === 'completed' ? 'Complete' : 'In Progress'}` : `AI Boardroom - ${getStageTitle(activeStage)}`)}
+              {activeMenu === 'learning-dashboard' && 'Conversation Learning Dashboard'}
               {activeMenu === 'impact-hub' && 'Conscious Capitalism — Stakeholder Impact Hub'}
+              {activeMenu === 'backend-layer' && 'Backend — Adaptive Assessment Layer'}
             </h2>
             <div className="workspace-actions">
               <Printer className="workspace-action-icon" size={16} />
@@ -1710,6 +1773,67 @@ export default function Home() {
               </div>
             )}
 
+            {activeMenu === 'learning-dashboard' && (
+              <div className="learning-dashboard">
+                <section className="learning-dashboard-hero">
+                  <div><span><Sparkles size={16}/> Adaptive conversation policy</span><h3>Each reply teaches the coach what to ask next.</h3><p>The local reinforcement policy rewards demonstrated reasoning and advances to the learner&apos;s weakest unpractised skill. It does not train Gemini on personal conversation data.</p></div>
+                  <div className="learning-score"><strong>{learningProgress.score}</strong><span>reasoning score</span><em>{learningProgress.improvement >= 0 ? '+' : ''}{learningProgress.improvement} this turn</em></div>
+                </section>
+
+                <section className="learning-metric-grid">
+                  {(Object.keys(learningLabels) as LearningSignal[]).map((signal) => {
+                    const demonstrated = learningProgress.signals[signal] > 0;
+                    return <article key={signal} className={demonstrated ? 'demonstrated' : 'next'}>
+                      <div><b>{learningLabels[signal]}</b><span>{demonstrated ? 'Demonstrated in your answers' : signal === learningProgress.nextFocus ? 'Next coaching focus' : 'Not yet demonstrated'}</span></div>
+                      <strong>{demonstrated ? '✓' : '—'}</strong>
+                    </article>;
+                  })}
+                </section>
+
+                <section className="learning-policy-card">
+                  <div><span>Next coaching move</span><h3>Ask for {learningLabels[learningProgress.nextFocus].toLowerCase()}.</h3><p>{learningProgress.turnCount === 0 ? 'Start a Boardroom session to collect the first response.' : 'The next Council question will target this one skill rather than repeating strengths already shown.'}</p></div>
+                  <button className="btn-replica-blue" onClick={() => setActiveMenu(messages.length ? 'boardroom-chat' : 'boardroom-intro')}>{messages.length ? 'Return to conversation' : 'Start conversation'} <ArrowUpRight size={15}/></button>
+                </section>
+              </div>
+            )}
+
+            {activeMenu === 'backend-layer' && (
+              <div className="backend-layer">
+                <section className="backend-hero">
+                  <div><span><ServerCog size={16}/> Assessment service · transparent demo</span><h3>How ABIS adapts to each student&apos;s reasoning capacity</h3><p>Each response is checked locally for decision quality. The competency score then changes the next AI prompt: it reinforces demonstrated skills and focuses on the weakest missing skill.</p></div>
+                  <div className="backend-score" aria-label={`Current competency score ${competencyScore} out of 100`}><strong>{competencyScore}</strong><span>/ 100</span><small>{competencyScore >= 70 ? 'Ready for deeper challenge' : competencyScore >= 40 ? 'Building reasoning' : 'Start with guided prompts'}</small></div>
+                </section>
+                <section className="backend-score-grid" aria-label="Competency scoring algorithm">
+                  {(Object.keys(learningLabels) as LearningSignal[]).map(signal => { const demonstrated = learningProgress.signals[signal] > 0; return <article key={signal} className={demonstrated ? 'earned' : 'available'}><span>{learningLabels[signal]}</span><strong>{demonstrated ? assessmentWeights[signal] : 0}<small> / {assessmentWeights[signal]}</small></strong><em>{demonstrated ? 'Detected in response' : 'Awaiting evidence'}</em></article>; })}
+                </section>
+                <section className="backend-flow" aria-label="Adaptive assessment flow">
+                  <article><BrainCircuit size={21}/><span>1. Analyse response</span><p>Detect choice, evidence, cause and effect, trade-offs, and revision triggers.</p></article><i><ChevronRight size={20}/></i>
+                  <article><BarChart3 size={21}/><span>2. Score competency</span><p>Assign transparent weighted points to create a score out of 100.</p></article><i><ChevronRight size={20}/></i>
+                  <article><MessageSquareText size={21}/><span>3. Adapt AI response</span><p>{learningProgress.turnCount ? `Next focus: ${learningLabels[learningProgress.nextFocus]}.` : 'Use a short, guided opening prompt.'}</p></article><i><ChevronRight size={20}/></i>
+                  <article><RotateCcw size={21}/><span>4. Learn from feedback</span><p>End-of-session feedback improves the next coaching approach.</p></article>
+                </section>
+                <section className="backend-bottom-grid">
+                  <article className="backend-panel"><span className="backend-kicker">Adaptive response policy</span><h4>{learningProgress.turnCount ? `Current focus: ${learningLabels[learningProgress.nextFocus]}` : 'First-response support'}</h4><p>{learningProgress.turnCount ? `The AI avoids repeating strengths already shown and asks one focused question to elicit ${learningLabels[learningProgress.nextFocus].toLowerCase()}.` : 'The AI begins with plain-language guidance, then increases complexity as the student demonstrates reasoning.'}</p><div className="backend-policy-row"><b>Student turns</b><span>{learningProgress.turnCount}</span></div><div className="backend-policy-row"><b>Live reasoning score</b><span>{learningProgress.score}/100</span></div></article>
+                  <article className="backend-panel feedback-panel"><span className="backend-kicker">Reinforcement learning reference</span><h4>Sample end-of-session feedback</h4><div className="feedback-sample good"><b>Helpful · +1 reward</b><p>“The coach asked one clear follow-up and helped me explain why my forecast could change.”</p><span>Reinforce: concise evidence-to-reasoning prompts</span></div><div className="feedback-sample bad"><b>Not helpful · −1 reward</b><p>“The prompt repeated something I had already explained and was too difficult.”</p><span>Adjust: reduce complexity and avoid repetition</span></div><small className="feedback-note">Feedback updates the coaching policy for future prompts; it does not train an external AI model on the student&apos;s private response.</small></article>
+                </section>
+                <section className="backend-qna-engine">
+                  <div className="backend-qna-heading"><div><span className="backend-kicker">Adaptive Q&A engine</span><h4>Mid-session assessment and question routing</h4><p>After every answer, the engine reassesses the student. At the third, sixth, and ninth response, it runs a short checkpoint before choosing the next question.</p></div><b className={`adaptive-level ${adaptiveSessionPlan.level}`}>{adaptiveSessionPlan.level} support</b></div>
+                  <div className="qna-rule-grid">
+                    <article><b>1. Collect a response</b><p>Store the learner answer and check for all five reasoning signals.</p><code>input → reasoning scan</code></article>
+                    <article><b>2. Recalculate performance</b><p>Update the 0–100 score and identify the least demonstrated skill.</p><code>score → next focus</code></article>
+                    <article><b>3. Checkpoint every 3 turns</b><p>{adaptiveSessionPlan.checkpointDue ? 'Checkpoint due now: acknowledge one strength and name one target.' : `Next checkpoint at response ${Math.ceil((learningProgress.turnCount + 1) / 3) * 3}.`}</p><code>turn {learningProgress.turnCount} → checkpoint</code></article>
+                    <article><b>4. Route the next question</b><p>{adaptiveSessionPlan.questionStyle}</p><code>level → question template</code></article>
+                  </div>
+                  <div className="qna-instruction-grid">
+                    <article className="instruction-card guided"><span>0–39 · Guided</span><h5>Make the thinking smaller</h5><p>Ask a single plain-language question, give one relevant data point or decision as a prompt, and praise effort before redirecting.</p><em>Example: “Your price is $450. What report result helped you choose it?”</em></article>
+                    <article className="instruction-card supported"><span>40–74 · Supported</span><h5>Connect evidence to a decision</h5><p>Ask why or how, require one piece of evidence, and invite the student to explain the cause-and-effect link.</p><em>Example: “How does that demand data support your production decision?”</em></article>
+                    <article className="instruction-card challenge"><span>75–100 · Challenge</span><h5>Test executive reasoning</h5><p>Introduce one trade-off, alternative, or change trigger. Do not answer for the student or repeat demonstrated skills.</p><em>Example: “What result would make you reverse this decision, and why?”</em></article>
+                  </div>
+                  <div className="checkpoint-script"><strong>Checkpoint script</strong><span>“You have shown <b>choice</b> and <b>evidence</b>. Next, explain the <b>{learningLabels[learningProgress.nextFocus].toLowerCase()}</b> in one sentence.”</span><small>{adaptiveSessionPlan.feedbackStyle}</small></div>
+                </section>
+              </div>
+            )}
+
             {/* VIEW: Final Check Strategic Oral Defense */}
             {activeMenu === 'final-check' && (
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '20px' }}>
@@ -2076,6 +2200,7 @@ export default function Home() {
                 )}
 
                 <div className="boardroom-chat-messages">
+                  {chatProviderNotice && <div className={`chat-provider-notice ${chatProviderNotice.startsWith('Live') ? 'live' : ''}`}><Sparkles size={14}/><span>{chatProviderNotice}</span></div>}
                   {messages.map((m) => (
                     <div key={m.id} className={`boardroom-msg-card ${m.role}`}>
                       <div className="boardroom-msg-header">
@@ -2289,34 +2414,67 @@ export default function Home() {
         </div>
       )}
 
-      {/* MODAL 2: SETTINGS (API KEY) */}
+      {/* Account: personal AI connection preferences remain on this device. */}
       {showSettingsModal && (
         <div className="modal-overlay">
-          <div className="boardroom-msg-card modal-content animate-fade-in" style={{ padding: '24px', maxWidth: '400px', textAlign: 'left' }}>
+          <div className="boardroom-msg-card modal-content animate-fade-in ai-gateway-modal">
             <h3 style={{ fontSize: '1.1rem', fontWeight: 700, color: 'var(--workspace-text-dark)', marginBottom: '8px' }}>
-              ABIS API Key Settings
+              AI Connection Gateway
             </h3>
             <p style={{ fontSize: '0.85rem', color: '#556B82', lineHeight: '1.5', marginBottom: '16px' }}>
-              By default, ABIS runs on a local Socratic mock. Enter your Gemini API key to connect live LLMs (Gemini 1.5 Flash) for dynamic dialogue.
+              Choose the coach engine for this device. Keys are masked and stored only in this browser; they are never shown in the simulation.
             </p>
 
+            <div className="gateway-provider-tabs" role="tablist" aria-label="AI provider">
+              {([
+                ['gemini', 'Gemini'],
+                ['openai', 'ChatGPT'],
+                ['anthropic', 'Claude']
+              ] as Array<[AiProvider, string]>).map(([provider, label]) => (
+                <button key={provider} type="button" role="tab" aria-selected={aiGateway.provider === provider} className={aiGateway.provider === provider ? 'active' : ''} onClick={() => setAiGateway(current => ({ ...current, provider }))}>{label}</button>
+              ))}
+            </div>
+
             <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', marginBottom: '16px' }}>
-              <label style={{ fontSize: '0.8rem', fontWeight: 600 }}>Gemini API Key</label>
+              <label style={{ fontSize: '0.8rem', fontWeight: 600 }}>{aiGateway.provider === 'gemini' ? 'Gemini API key' : aiGateway.provider === 'openai' ? 'ChatGPT / OpenAI API key' : 'Claude / Anthropic API key'}</label>
               <input
                 type="password"
-                placeholder="AIzaSy..."
+                autoComplete="off"
+                placeholder={aiGateway.provider === 'gemini' ? 'AIzaSy...' : aiGateway.provider === 'openai' ? 'sk-...' : 'sk-ant-...'}
                 className="boardroom-input"
                 value={customApiKey}
-                onChange={(e) => setCustomApiKey(e.target.value)}
+                onChange={(e) => setAiGateway(current => ({ ...current, [`${current.provider}Key`]: e.target.value }))}
                 style={{ width: '100%' }}
               />
+              <small className="gateway-security-note">The active connector is {customApiKey ? 'ready for the next conversation.' : 'not yet configured; ABIS will use its local Socratic coach.'}</small>
+            </div>
+
+            <div className="gateway-status-grid" aria-label="Connection status">
+              <span><i className={aiGateway.geminiKey ? 'configured' : ''} /> Gemini</span>
+              <span><i className={aiGateway.openaiKey ? 'configured' : ''} /> ChatGPT</span>
+              <span><i className={aiGateway.anthropicKey ? 'configured' : ''} /> Claude</span>
             </div>
 
             <div style={{ display: 'flex', gap: '12px', width: '100%' }}>
               <button onClick={() => setShowSettingsModal(false)} className="btn-replica-grey" style={{ flex: 1 }}>Close</button>
-              <button onClick={() => saveApiKey(customApiKey)} className="btn-replica-blue" style={{ flex: 1.5 }}>Save</button>
+              <button onClick={saveAiGateway} className="btn-replica-blue" style={{ flex: 1.5 }}>Save connection</button>
             </div>
           </div>
+        </div>
+      )}
+
+      {showBackendPasswordModal && (
+        <div className="modal-overlay">
+          <form onSubmit={unlockBackend} className="backend-password-modal animate-fade-in" role="dialog" aria-modal="true" aria-labelledby="backend-password-title">
+            <div className="backend-password-icon"><ServerCog size={24}/></div>
+            <span>Restricted area</span>
+            <h3 id="backend-password-title">Open Backend Layer</h3>
+            <p>Enter the authorised password to view the adaptive assessment system.</p>
+            <label htmlFor="backend-password-input">Password</label>
+            <input id="backend-password-input" type="password" value={backendPassword} onChange={(event) => { setBackendPassword(event.target.value); setBackendPasswordError(''); }} autoFocus autoComplete="current-password" aria-describedby={backendPasswordError ? 'backend-password-error' : undefined}/>
+            {backendPasswordError && <small id="backend-password-error" className="backend-password-error">{backendPasswordError}</small>}
+            <div><button type="button" className="btn-replica-grey" onClick={() => setShowBackendPasswordModal(false)}>Cancel</button><button type="submit" className="btn-replica-blue">Open backend</button></div>
+          </form>
         </div>
       )}
 

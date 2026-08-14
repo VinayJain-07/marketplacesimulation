@@ -19,6 +19,8 @@
 # misc
 .DS_Store
 *.pem
+/tmp/
+/.tmp-demo-deck/
 
 # debug
 npm-debug.log*
