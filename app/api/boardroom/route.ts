@@ -2,6 +2,74 @@ import { NextResponse } from 'next/server';
 import { BoardroomMode, getBoardroomSystemPrompt, getMockResponse, Message, SimulationDecisions } from '@/lib/abis-engine';
 import { buildConversationContents, getConversationGuardrails, guardConversationResponse } from '@/lib/conversation-orchestrator';
 import { evaluateLearningProgress, getAdaptiveLearningGuidance } from '@/lib/adaptive-learning';
+import { messagesToTelemetry } from '@/lib/personalization/telemetry';
+import { buildPlayerState } from '@/lib/personalization/player-model';
+import { getQuestionBank } from '@/lib/personalization/question-bank';
+import { getPolicyPrompt, selectQuestion } from '@/lib/personalization/policy';
+
+type AiProvider = 'gemini' | 'openai' | 'anthropic' | 'openrouter';
+type CredentialSource = 'browser' | 'server' | 'missing';
+type ProviderCandidate = {
+  provider: AiProvider;
+  apiKey: string;
+  credentialSource: CredentialSource;
+  fallbackFrom?: AiProvider;
+};
+
+const PROVIDER_LABELS: Record<AiProvider, string> = {
+  gemini: 'Gemini',
+  openai: 'ChatGPT',
+  anthropic: 'Claude',
+  openrouter: 'OpenRouter'
+};
+
+function getServerProviderKeys(): Record<AiProvider, string> {
+  return {
+    openai: process.env.OPENAI_API_KEY?.trim() || '',
+    gemini: process.env.GEMINI_API_KEY?.trim() || '',
+    anthropic: process.env.ANTHROPIC_API_KEY?.trim() || '',
+    openrouter: process.env.OPENROUTER_API_KEY?.trim() || ''
+  };
+}
+
+function getProviderCandidates(requestedProvider: AiProvider, customApiKey?: string): ProviderCandidate[] {
+  const browserKey = customApiKey?.trim() || '';
+  if (browserKey) {
+    return [{ provider: requestedProvider, apiKey: browserKey, credentialSource: 'browser' }];
+  }
+
+  const serverKeys = getServerProviderKeys();
+  const orderedProviders = [requestedProvider, ...( ['openai', 'gemini', 'anthropic', 'openrouter'] as AiProvider[]).filter((provider) => provider !== requestedProvider)];
+  const candidates = orderedProviders
+    .filter((provider) => serverKeys[provider])
+    .map((provider) => ({
+      provider,
+      apiKey: serverKeys[provider],
+      credentialSource: 'server' as const,
+      ...(provider !== requestedProvider ? { fallbackFrom: requestedProvider } : {})
+    }));
+
+  return candidates.length
+    ? candidates
+    : [{ provider: requestedProvider, apiKey: '', credentialSource: 'missing' }];
+}
+
+function getProviderMessage(candidate: ProviderCandidate, previousFailure?: string) {
+  const providerLabel = PROVIDER_LABELS[candidate.provider];
+  if (previousFailure && candidate.credentialSource === 'server') {
+    return `${previousFailure} ABIS switched to the ${providerLabel} server connection.`;
+  }
+
+  if (candidate.fallbackFrom) {
+    return `${PROVIDER_LABELS[candidate.fallbackFrom]} is not configured, so ABIS is using the ${providerLabel} server connection.`;
+  }
+
+  return candidate.credentialSource === 'server'
+    ? `${providerLabel} server connection active.`
+    : candidate.credentialSource === 'browser'
+      ? `${providerLabel} browser key active.`
+      : `${providerLabel} is not configured.`;
+}
 
 export async function POST(request: Request) {
   try {
@@ -10,7 +78,7 @@ export async function POST(request: Request) {
       decisions: SimulationDecisions;
       stage: 'awareness' | 'discovery' | 'refinement' | 'completed';
       customApiKey?: string;
-      aiProvider?: 'gemini' | 'openai' | 'anthropic';
+      aiProvider?: AiProvider;
       mode?: BoardroomMode;
       courseTopics?: string[];
     };
@@ -19,7 +87,12 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: 'A conversation, simulation decisions, and dialogue stage are required.' }, { status: 400 });
     }
 
-    const apiKey = customApiKey?.trim() || (aiProvider === 'openai' ? process.env.OPENAI_API_KEY : aiProvider === 'anthropic' ? process.env.ANTHROPIC_API_KEY : process.env.GEMINI_API_KEY);
+    const candidates = getProviderCandidates(aiProvider, customApiKey);
+    let activeCandidate = candidates[0];
+    let providerMessage = getProviderMessage(activeCandidate);
+    const telemetryEvents = messagesToTelemetry(messages, decisions);
+    const playerState = buildPlayerState(telemetryEvents);
+    const policyDecision = selectQuestion(playerState, getQuestionBank(decisions), telemetryEvents);
 
     const mockResponse = (providerError?: string) => {
       const mock = getMockResponse(decisions, messages, stage, mode, courseTopics);
@@ -27,104 +100,163 @@ export async function POST(request: Request) {
       return NextResponse.json({
         role: 'assistant',
         cxo: mock.cxo,
-        content: mock.content,
+        content: mode === 'decision-help' ? mock.content : policyDecision.selected.prompt,
         nextStage: mock.nextStage,
         learningProgress,
+        playerState,
+        policyDecision,
         isMocked: true,
+        providerUsed: activeCandidate.provider,
+        credentialSource: activeCandidate.credentialSource,
+        providerMessage,
         ...(providerError ? { providerError } : {})
       });
     };
 
     // Fall back to Mock engine if no API key is present
-    if (!apiKey) {
+    if (!activeCandidate.apiKey) {
       console.log('No AI provider key found. Falling back to Mock Boardroom engine.');
-      const keyName = aiProvider === 'openai' ? 'OPENAI_API_KEY' : aiProvider === 'anthropic' ? 'ANTHROPIC_API_KEY' : 'GEMINI_API_KEY';
-      return mockResponse(`Real chat is not configured. Add ${keyName} to the Vercel project environment variables, or connect a valid ${aiProvider} key in the app settings.`);
+      const keyName = aiProvider === 'openai'
+        ? 'OPENAI_API_KEY'
+        : aiProvider === 'anthropic'
+          ? 'ANTHROPIC_API_KEY'
+          : aiProvider === 'openrouter'
+            ? 'OPENROUTER_API_KEY'
+            : 'GEMINI_API_KEY';
+      return mockResponse(`Real chat is not configured. Add ${keyName} to the server environment variables, or connect a valid ${PROVIDER_LABELS[aiProvider]} key in the app settings.`);
     }
 
     const promptStage = stage === 'completed' ? 'refinement' : stage;
     const learningProgress = evaluateLearningProgress(messages);
-    const systemPrompt = `${getBoardroomSystemPrompt(decisions, promptStage, mode, courseTopics)}${getConversationGuardrails(mode, stage)}${getAdaptiveLearningGuidance(learningProgress, mode)}`;
-    const contents = buildConversationContents(messages);
+    const systemPrompt = `${getBoardroomSystemPrompt(decisions, promptStage, mode, courseTopics, messages)}${getConversationGuardrails(mode, stage)}${getAdaptiveLearningGuidance(learningProgress, mode)}${getPolicyPrompt(policyDecision)}`;
+    // Every provider requires a user turn. The initial boardroom opening used
+    // to send an empty conversation, which made Gemini reject the request and
+    // silently route students to the local coach.
+    const providerMessages: Message[] = messages.length
+      ? messages
+      : [{ id: 'opening-prompt', role: 'user', content: courseTopics[0] || 'Begin the Socratic boardroom conversation with one concise, thoughtful question about this quarter\'s decisions.', timestamp: 'Now' }];
+    const contents = buildConversationContents(providerMessages);
 
-    let response: Response;
+    let response: Response | undefined;
     let text: string | undefined;
+    let lastFailureMessage = '';
+    const providerFailures: string[] = [];
 
-    if (aiProvider === 'openai') {
-      response = await fetch('https://api.openai.com/v1/chat/completions', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${apiKey}`,
-        },
-        body: JSON.stringify({
-          model: 'gpt-4o-mini',
-          messages: [{ role: 'system', content: systemPrompt }, ...messages.map(message => ({ role: message.role === 'assistant' ? 'assistant' : 'user', content: message.content }))],
-          temperature: 0.4,
-          max_tokens: 500,
-        }),
-      });
-      if (response.ok) {
-        const data = await response.json();
-        text = data.choices?.[0]?.message?.content?.trim();
-      }
-    } else if (aiProvider === 'anthropic') {
-      const anthropicMessages = messages.length
-        ? messages.map(message => ({ role: message.role === 'assistant' ? 'assistant' as const : 'user' as const, content: message.content }))
-        : [{ role: 'user' as const, content: courseTopics[0] || 'Begin the Socratic coaching conversation with one thoughtful question.' }];
-      response = await fetch('https://api.anthropic.com/v1/messages', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' },
-        body: JSON.stringify({
-          model: 'claude-3-5-haiku-latest',
-          system: systemPrompt,
-          messages: anthropicMessages,
-          temperature: 0.4,
-          max_tokens: 500,
-        }),
-      });
-      if (response.ok) {
-        const data = await response.json();
-        text = data.content?.[0]?.text?.trim();
-      }
-    } else {
-      response = await fetch(
-        `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`,
-        {
+    for (const candidate of candidates) {
+      activeCandidate = candidate;
+      const activeProvider = candidate.provider;
+
+      if (activeProvider === 'openai') {
+        response = await fetch('https://api.openai.com/v1/chat/completions', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${candidate.apiKey}`,
+          },
           body: JSON.stringify({
-            systemInstruction: { parts: [{ text: systemPrompt }] },
-            contents,
-            generationConfig: { temperature: 0.4, maxOutputTokens: 500 }
+            model: 'gpt-4o-mini',
+            messages: [{ role: 'system', content: systemPrompt }, ...providerMessages.map(message => ({ role: message.role === 'assistant' ? 'assistant' : 'user', content: message.content }))],
+            temperature: 0.4,
+            max_tokens: 500,
           }),
+        });
+        if (response.ok) {
+          const data = await response.json();
+          text = data.choices?.[0]?.message?.content?.trim();
         }
-      );
-      if (response.ok) {
-        const data = await response.json();
-        text = data.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
+      } else if (activeProvider === 'openrouter') {
+        response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${candidate.apiKey}`,
+            'HTTP-Referer': request.headers.get('origin') || 'http://localhost:3000',
+            'X-OpenRouter-Title': 'ABIS Marketplace Coach',
+          },
+          body: JSON.stringify({
+            model: process.env.OPENROUTER_MODEL?.trim() || 'openai/gpt-4o-mini',
+            messages: [{ role: 'system', content: systemPrompt }, ...providerMessages.map(message => ({ role: message.role === 'assistant' ? 'assistant' : 'user', content: message.content }))],
+            temperature: 0.4,
+            max_tokens: 500,
+          }),
+        });
+        if (response.ok) {
+          const data = await response.json();
+          text = data.choices?.[0]?.message?.content?.trim();
+        }
+      } else if (activeProvider === 'anthropic') {
+        const anthropicMessages = providerMessages.map(message => ({ role: message.role === 'assistant' ? 'assistant' as const : 'user' as const, content: message.content }));
+        response = await fetch('https://api.anthropic.com/v1/messages', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'x-api-key': candidate.apiKey, 'anthropic-version': '2023-06-01' },
+          body: JSON.stringify({
+            model: 'claude-haiku-4-5-20251001',
+            system: systemPrompt,
+            messages: anthropicMessages,
+            temperature: 0.4,
+            max_tokens: 500,
+          }),
+        });
+        if (response.ok) {
+          const data = await response.json();
+          text = data.content?.[0]?.text?.trim();
+        }
+      } else {
+        response = await fetch(
+          `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash:generateContent?key=${candidate.apiKey}`,
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              systemInstruction: { parts: [{ text: systemPrompt }] },
+              contents,
+              generationConfig: { temperature: 0.4, maxOutputTokens: 500 }
+            }),
+          }
+        );
+        if (response.ok) {
+          const data = await response.json();
+          text = data.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
+        }
       }
-    }
 
-    if (!response.ok) {
-      const errText = await response.text();
-      console.error(`${aiProvider} API Error: ${response.status} ${response.statusText} - ${errText}`);
-      // A temporary provider/configuration failure should never end a student
-      // session. Keep the conversation moving with the local coach instead.
-      return mockResponse(`${aiProvider} is unavailable (${response.status}). Using the local conversation engine.`);
+      if (response?.ok && text) {
+        providerMessage = getProviderMessage(candidate, lastFailureMessage);
+        break;
+      }
+
+      const errText = response ? await response.text() : 'Unknown provider error.';
+      console.error(`${activeProvider} API Error: ${response?.status} ${response?.statusText} - ${errText}`);
+      let detail = '';
+      try {
+        const parsed = JSON.parse(errText) as { error?: { message?: string } | string; message?: string };
+        const rawMessage = typeof parsed.error === 'string' ? parsed.error : parsed.error?.message || parsed.message;
+        if (rawMessage) detail = ` ${rawMessage.slice(0, 220)}`;
+      } catch {
+        // Some providers return non-JSON error bodies; the status is still useful.
+      }
+
+      lastFailureMessage = `${PROVIDER_LABELS[activeProvider]} connection was rejected (${response?.status || 500}).${detail}`;
+      providerFailures.push(lastFailureMessage);
+      providerMessage = getProviderMessage(candidate);
+
+      if (candidate.credentialSource !== 'server' || candidate === candidates[candidates.length - 1]) {
+        return mockResponse(`${lastFailureMessage} Using the local conversation engine.`);
+      }
     }
 
     if (!text) {
-      console.error(`${aiProvider} returned no usable response.`);
-      return mockResponse(`${aiProvider} returned an empty response. Using the local conversation engine.`);
+      console.error(`${activeCandidate.provider} returned no usable response.`);
+      return mockResponse(`${PROVIDER_LABELS[activeCandidate.provider]} returned an empty response. Using the local conversation engine.`);
     }
 
     // Do not render a model response until the orchestration layer has checked
     // the role, format, length, and single-question conversation contract.
-    const guardedResponse = guardConversationResponse(text, mode, stage);
+    const guardedResponse = guardConversationResponse(text, mode, stage, policyDecision.selected.prompt);
     if (!guardedResponse.accepted) {
-      console.error(`${aiProvider} response blocked by conversation guardrails: ${guardedResponse.reason}`);
-      return mockResponse(`${aiProvider} returned a response outside the boardroom conversation rules. Using the local conversation engine.`);
+      console.error(`${activeCandidate.provider} response blocked by conversation guardrails: ${guardedResponse.reason}`);
+      const priorConnectionIssue = providerFailures[0] ? `${providerFailures[0]} ` : '';
+      return mockResponse(`${priorConnectionIssue}${PROVIDER_LABELS[activeCandidate.provider]} returned a response that needs coaching-format cleanup (${guardedResponse.reason}). Using the local conversation engine.`);
     }
 
     // Dialogue State progression triggers based on turn count or context
@@ -147,7 +279,12 @@ export async function POST(request: Request) {
       content: guardedResponse.content,
       nextStage,
       learningProgress,
-      isMocked: false
+      playerState,
+      policyDecision,
+      isMocked: false,
+      providerUsed: activeCandidate.provider,
+      credentialSource: activeCandidate.credentialSource,
+      providerMessage
     });
 
   } catch (error: unknown) {

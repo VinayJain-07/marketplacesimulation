@@ -19,6 +19,17 @@ export interface AdaptiveSessionPlan {
   feedbackStyle: string;
 }
 
+export type OutcomeBand = 'emerging' | 'developing' | 'proficient' | 'advanced';
+
+export interface StudentOutcomeAssessment {
+  band: OutcomeBand;
+  readiness: string;
+  strengths: LearningSignal[];
+  gaps: LearningSignal[];
+  teacherJudgement: string;
+  nextStep: string;
+}
+
 const SIGNAL_PATTERNS: Record<LearningSignal, RegExp> = {
   choice: /\b(choose|chose|decision|target|price|plan|will|prefer)\b/i,
   evidence: /\b(\$?\d[\d,]*%?|report|data|demand|sales|share|margin|cash|cost|stock|research)\b/i,
@@ -73,5 +84,55 @@ export function getAdaptiveLearningGuidance(progress: LearningProgress, mode: Bo
   };
   const role = mode === 'verbal-assessment' ? 'Socratic Coach' : 'Boardroom Council';
   const plan = getAdaptiveSessionPlan(progress);
+  if (mode === 'decision-help') {
+    return `\n\nADAPTIVE TEACHER GUIDANCE (internal):\n- Keep a natural student-teacher chat about the student's current game decision.\n- Use their words and reports. Keep sentences short. Acknowledge what they said, explain one business link in plain language, then ask one useful follow-up.\n- The next learning target is ${labels[progress.nextFocus]}; weave it in without naming the skill, score, policy, or difficulty.\n- Light Gen Z wording is okay when it feels natural, such as “Got you” or “Quick check.” Do not force slang.\n- If they are unsure, use a small scenario or comparison. Help them reach their own conclusion over several turns.`;
+  }
   return `\n\nADAPTIVE LEARNING POLICY:\n- ${role} learning score: ${progress.score}/100 after ${progress.turnCount} learner turn(s).\n- Reward demonstrated reasoning by advancing to the next missing skill. Do not repeat a skill already demonstrated unless the learner asks.\n- The next most useful skill is: ${labels[progress.nextFocus]}.\n- Current support level: ${plan.level}. ${plan.questionStyle}\n- Feedback instruction: ${plan.feedbackStyle}\n- ${plan.checkpointDue ? 'MID-SESSION CHECKPOINT: briefly assess progress before the next question; state one demonstrated strength and one next target.' : 'Continue the current adaptive Q&A sequence.'}\n- Ask one question that elicits only the next useful skill.`;
+}
+
+/** Converts signal coverage into a teacher-facing judgement about student outcomes. */
+export function assessStudentOutcome(progress: LearningProgress): StudentOutcomeAssessment {
+  const strengths = SIGNAL_ORDER.filter((signal) => progress.signals[signal] > 0);
+  const gaps = SIGNAL_ORDER.filter((signal) => progress.signals[signal] === 0);
+
+  let band: OutcomeBand;
+  if (progress.score >= 85 && gaps.length <= 1) {
+    band = 'advanced';
+  } else if (progress.score >= 65 && strengths.length >= 3) {
+    band = 'proficient';
+  } else if (progress.score >= 35 && strengths.length >= 2) {
+    band = 'developing';
+  } else {
+    band = 'emerging';
+  }
+
+  const readiness = band === 'advanced'
+    ? 'Can defend a decision with evidence, trade-offs, and revision triggers.'
+    : band === 'proficient'
+      ? 'Can explain a decision clearly but still needs tighter executive justification.'
+      : band === 'developing'
+        ? 'Shows partial reasoning but needs support to connect decisions, evidence, and consequences.'
+        : 'Needs guided prompting to state the decision and support it with relevant evidence.';
+
+  const teacherJudgement = band === 'advanced'
+    ? 'Outcome achieved at a strong level. The student can justify business choices with accountability.'
+    : band === 'proficient'
+      ? 'Outcome largely achieved. The student is operationally sound but should strengthen challenge-level reasoning.'
+      : band === 'developing'
+        ? 'Outcome partially achieved. The student can participate but does not yet sustain a full decision-defense chain.'
+        : 'Outcome not yet secure. The student needs scaffolded questioning before independent judgment can be trusted.';
+
+  const nextStep = gaps.length === 0
+    ? 'Raise the challenge: ask for an alternative decision, a downside, and the condition that would trigger a revision.'
+    : gaps[0] === 'choice'
+      ? 'Ask the student to state the decision in one sentence before explaining it.'
+      : gaps[0] === 'evidence'
+        ? 'Ask for one number, report result, or market signal that supports the decision.'
+        : gaps[0] === 'causality'
+          ? 'Ask how the evidence leads to the expected business result.'
+          : gaps[0] === 'tradeoff'
+            ? 'Ask what risk, cost, or sacrifice the student is accepting.'
+            : 'Ask what result would make the student revise the decision.';
+
+  return { band, readiness, strengths, gaps, teacherJudgement, nextStep };
 }
