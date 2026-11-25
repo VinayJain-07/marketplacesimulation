@@ -100,7 +100,7 @@ export async function POST(request: Request) {
       return NextResponse.json({
         role: 'assistant',
         cxo: mock.cxo,
-        content: mode === 'decision-help' ? mock.content : policyDecision.selected.prompt,
+        content: mock.content,
         nextStage: mock.nextStage,
         learningProgress,
         playerState,
@@ -126,9 +126,14 @@ export async function POST(request: Request) {
       return mockResponse(`Real chat is not configured. Add ${keyName} to the server environment variables, or connect a valid ${PROVIDER_LABELS[aiProvider]} key in the app settings.`);
     }
 
-    const promptStage = stage === 'completed' ? 'refinement' : stage;
+    const userTurnCount = messages.filter(m => m.role === 'user').length;
+    const promptStage = userTurnCount >= 2 ? 'completed' : stage === 'completed' ? 'refinement' : stage;
     const learningProgress = evaluateLearningProgress(messages);
-    const systemPrompt = `${getBoardroomSystemPrompt(decisions, promptStage, mode, courseTopics, messages)}${getConversationGuardrails(mode, stage)}${getAdaptiveLearningGuidance(learningProgress, mode)}${getPolicyPrompt(policyDecision)}`;
+    const policyPrompt = (mode === 'decision-help' || mode === 'impact-review') ? '' : getPolicyPrompt(policyDecision);
+    const finalTurnInstruction = userTurnCount >= 2 
+      ? '\n\nFINAL TURN DIRECTIVE: The student has completed the defense. Do NOT ask any more questions. Do NOT use question marks. Deliver a definitive, concrete 2-3 sentence strategic verdict and actionable recommendation for their Quarter 4 plan, approve their strategy, and officially conclude the session.'
+      : '';
+    const systemPrompt = `${getBoardroomSystemPrompt(decisions, promptStage, mode, courseTopics, messages)}${getConversationGuardrails(mode, promptStage)}${getAdaptiveLearningGuidance(learningProgress, mode)}${policyPrompt}${finalTurnInstruction}`;
     // Every provider requires a user turn. The initial boardroom opening used
     // to send an empty conversation, which made Gemini reject the request and
     // silently route students to the local coach.
@@ -146,6 +151,7 @@ export async function POST(request: Request) {
       activeCandidate = candidate;
       const activeProvider = candidate.provider;
 
+      let rawText = '';
       if (activeProvider === 'openai') {
         response = await fetch('https://api.openai.com/v1/chat/completions', {
           method: 'POST',
@@ -160,9 +166,12 @@ export async function POST(request: Request) {
             max_tokens: 500,
           }),
         });
+        rawText = response ? await response.text() : '';
         if (response.ok) {
-          const data = await response.json();
-          text = data.choices?.[0]?.message?.content?.trim();
+          try {
+            const data = JSON.parse(rawText);
+            text = data.choices?.[0]?.message?.content?.trim();
+          } catch {}
         }
       } else if (activeProvider === 'openrouter') {
         response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
@@ -174,15 +183,18 @@ export async function POST(request: Request) {
             'X-OpenRouter-Title': 'ABIS Marketplace Coach',
           },
           body: JSON.stringify({
-            model: process.env.OPENROUTER_MODEL?.trim() || 'openai/gpt-4o-mini',
+            model: process.env.OPENROUTER_MODEL?.trim() || 'nvidia/nemotron-3.5-lightning:free',
             messages: [{ role: 'system', content: systemPrompt }, ...providerMessages.map(message => ({ role: message.role === 'assistant' ? 'assistant' : 'user', content: message.content }))],
             temperature: 0.4,
             max_tokens: 500,
           }),
         });
+        rawText = response ? await response.text() : '';
         if (response.ok) {
-          const data = await response.json();
-          text = data.choices?.[0]?.message?.content?.trim();
+          try {
+            const data = JSON.parse(rawText);
+            text = data.choices?.[0]?.message?.content?.trim();
+          } catch {}
         }
       } else if (activeProvider === 'anthropic') {
         const anthropicMessages = providerMessages.map(message => ({ role: message.role === 'assistant' ? 'assistant' as const : 'user' as const, content: message.content }));
@@ -197,9 +209,12 @@ export async function POST(request: Request) {
             max_tokens: 500,
           }),
         });
+        rawText = response ? await response.text() : '';
         if (response.ok) {
-          const data = await response.json();
-          text = data.content?.[0]?.text?.trim();
+          try {
+            const data = JSON.parse(rawText);
+            text = data.content?.[0]?.text?.trim();
+          } catch {}
         }
       } else {
         response = await fetch(
@@ -214,9 +229,12 @@ export async function POST(request: Request) {
             }),
           }
         );
+        rawText = response ? await response.text() : '';
         if (response.ok) {
-          const data = await response.json();
-          text = data.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
+          try {
+            const data = JSON.parse(rawText);
+            text = data.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
+          } catch {}
         }
       }
 
@@ -225,7 +243,7 @@ export async function POST(request: Request) {
         break;
       }
 
-      const errText = response ? await response.text() : 'Unknown provider error.';
+      const errText = rawText || 'Unknown provider error.';
       console.error(`${activeProvider} API Error: ${response?.status} ${response?.statusText} - ${errText}`);
       let detail = '';
       try {
@@ -252,7 +270,8 @@ export async function POST(request: Request) {
 
     // Do not render a model response until the orchestration layer has checked
     // the role, format, length, and single-question conversation contract.
-    const guardedResponse = guardConversationResponse(text, mode, stage, policyDecision.selected.prompt);
+    const expectedPrompt = (mode === 'decision-help' || mode === 'impact-review') ? undefined : policyDecision.selected.prompt;
+    const guardedResponse = guardConversationResponse(text, mode, stage, expectedPrompt);
     if (!guardedResponse.accepted) {
       console.error(`${activeCandidate.provider} response blocked by conversation guardrails: ${guardedResponse.reason}`);
       const priorConnectionIssue = providerFailures[0] ? `${providerFailures[0]} ` : '';
@@ -263,14 +282,10 @@ export async function POST(request: Request) {
     let nextStage = stage;
     const userMessageCount = messages.filter(m => m.role === 'user').length;
     
-    if (mode === 'verbal-assessment' && userMessageCount >= 5) {
+    if (userMessageCount >= 2) {
       nextStage = 'completed';
-    } else if (stage === 'awareness' && userMessageCount >= 2) {
+    } else if (stage === 'awareness' && userMessageCount >= 1) {
       nextStage = 'discovery';
-    } else if (stage === 'discovery' && userMessageCount >= 4) {
-      nextStage = 'refinement';
-    } else if (stage === 'refinement' && userMessageCount >= 6) {
-      nextStage = 'completed';
     }
 
     return NextResponse.json({

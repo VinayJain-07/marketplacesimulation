@@ -101,7 +101,7 @@ export function guardConversationResponse(
     return { accepted: false, reason: 'The assessment response used the wrong role.' };
   }
 
-  if (requiresQuestion && !/\b(decision|evidence|report|demand|price|pricing|production|inventory|stock|cash|margin|profit|sales|marketing|capacity|forecast|competitor|segment|customer|brand|stakeholder|risk|trade-?off|assumption|quarter|revise|revision)\b/i.test(content)) {
+  if (requiresQuestion && !/\b(decision|evidence|report|demand|price|pricing|production|inventory|stock|cash|margin|profit|sales|marketing|advertising|ad|media|channel|cost|revenue|capacity|forecast|competitor|segment|customer|brand|stakeholder|risk|trade-?off|assumption|quarter|revise|revision)\b/i.test(content)) {
     return { accepted: false, reason: `The response was not grounded in the marketplace game${selectedPrompt ? ' or the selected probe' : ''}.` };
   }
   if (requiresQuestion && !/[?!.。！？]$/.test(content)) {

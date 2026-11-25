@@ -299,8 +299,22 @@ export function getHelpMeDecideProfile(context: string, messages: Message[]) {
   return { moduleLabel: set.label, learnerPath, move, question };
 }
 
+const RECOMMENDATIONS: Record<string, string> = {
+  'Market offering and brand setup': 'Strategic Verdict: Your brand configuration matches segment expectations. Focus your R&D on high-impact ergonomics and durable carbon layups. Avoid feature bloat that raises unit cost above what the segment will pay.',
+  'Pricing': 'Strategic Verdict: Your $3,000 price point for the Mercedes segment is strategically justified by your 77% market share and $1,600 unit margin. Maintain price discipline; do not drop price into Workhorse territory.',
+  'Advertising and media placement': 'Strategic Verdict: For your Mercedes campaign, allocate 65% of your ad spend into targeted digital and premium cycling media. Emphasize craftsmanship claims to defend brand equity against competitor discounting.',
+  'Demand forecasting and production capacity': 'Strategic Verdict: With 797 units of past demand, target 1,200 units of operating capacity in Q4. Pair this with an $80,000 investment in fixed capacity expansion so you can scale to 1,600+ units in Q5 without incurring overtime cost.',
+  'Funding and financial risk': 'Strategic Verdict: Secure a $250,000 commercial loan to fund fixed asset expansion. Maintain a minimum $120,000 cash safety buffer at the end of Q4 to cushion against competitor price wars.',
+  'Sales by brand and store demand': 'Strategic Verdict: Prioritize sales reps in Tokyo where Mercedes density is highest. Maintain 4 reps in Tokyo and 2 in Sydney to ensure adequate showroom conversion.',
+  'Default': 'Strategic Verdict: Your plan is cohesive. Defend your high-margin Mercedes position, maintain disciplined production to prevent inventory holding costs, and ensure a healthy cash reserve before submitting.'
+};
+
 export function getHelpMeDecidePrompt(context: string, messages: Message[]) {
   const profile = getHelpMeDecideProfile(context, messages);
+  const userMessages = messages.filter((message) => message.role === 'user');
+  if (userMessages.length >= 2) {
+    return `TEACHER-COACHING CONTEXT: This is the FINAL turn of the coaching session. Do NOT ask another question. Do NOT include any question marks. Synthesize the student's reasoning and deliver a concrete, actionable recommendation in 2 to 3 sentences for ${profile.moduleLabel}. Give a clear verdict on their strategy, state what numbers or decisions to lock in, and conclude the session.`;
+  }
   return `TEACHER-COACHING CONTEXT (keep this invisible to the student):\n- Module: ${profile.moduleLabel}\n- Current learning move: ${profile.move}\n- Use this as the next learning target, but phrase it naturally and connect it to the student's last words: "${profile.question}"\n- Sound like a patient teacher who knows the student's work. Use short sentences. Acknowledge what they said, explain one business link, then ask one natural follow-up.\n- Build one step at a time toward a conclusion: decision, evidence, consequence, trade-off, then what would change the decision. Do not announce these steps or use labels such as “learner path,” “probe,” or “routing.”\n- Keep the chat easy to follow. Light Gen Z wording is okay when it fits, such as “Got you,” “That tracks,” or “Quick check.” Do not force slang. Never use slang in a formal boardroom or assessment response.\n- If the learner is stuck, use a small comparison or familiar game example. If they ask for the answer, compare both options and let them choose.\n- Never refuse with “I cannot make that decision.” Keep ownership with the student while showing them how to reason.`;
 }
 
@@ -310,6 +324,10 @@ export function getHelpMeDecideResponse(context: string, messages: Message[]) {
   const userMessages = messages.filter((message) => message.role === 'user');
   if (!userMessages.length) {
     return `Let’s take this one step at a time. In ${profile.moduleLabel.toLowerCase()}, the useful starting point is to connect your choice to one result you can observe in the game. ${profile.question}`;
+  }
+  if (userMessages.length >= 2) {
+    const rec = RECOMMENDATIONS[profile.moduleLabel] || RECOMMENDATIONS['Default'];
+    return `Great job thinking through the trade-offs. Here is your concrete strategic recommendation:\n\n${rec}\n\nYou have completed this coaching session and have a clear action plan.`;
   }
   const latest = userMessages[userMessages.length - 1].content.toLowerCase();
   if (/don.?t know|not sure|no idea|unsure|stuck|help me|can.?t decide|cannot decide|confused/i.test(latest)) {

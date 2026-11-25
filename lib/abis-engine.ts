@@ -205,25 +205,13 @@ export function getMockResponse(
       };
     }
 
-    if (turn === 3) {
+    if (turn >= 2) {
       return {
         cxo: 'CHAIR',
-        content: `Good; connect the number to the outcome. If that number rises or falls, what happens to your demand or profit?`
+        content: `Decision Defense Complete. Final Verdict: Your decision to prioritize the ${decisions.targetSegment} segment at $${decisions.pricing.toLocaleString()} with ${decisions.productionVolume.toLocaleString()} units is strategically sound. You have articulated the link between segment willingness-to-pay and unit contribution margin ($1,600/unit). Actionable Recommendation: Lock in an ending cash buffer of at least $150,000 to defend against competitor rebates. You are cleared for Quarter 4 submission.`,
+        nextStage: 'completed'
       };
     }
-
-    if (turn === 4) {
-      return {
-        cxo: 'CHAIR',
-        content: `You have connected evidence to the decision. What next-quarter result would make you revise or reverse it?`
-      };
-    }
-
-    return {
-      cxo: 'CHAIR',
-      content: `Thank you. You defended one linked decision by moving from evidence to consequence and then to a revision trigger. Keep naming the risk you accepted whenever you make the final recommendation.`,
-      nextStage: 'completed'
-    };
   }
 
   if (mode === 'decision-help') {
@@ -249,101 +237,30 @@ export function getMockResponse(
     };
   }
 
-  if (stage === 'awareness') {
+  if (stage === 'awareness' || stage === 'discovery' || stage === 'refinement') {
     if (turn === 0) {
       return {
-        cxo: 'CHAIR',
-        content: `Welcome to the Quarter 4 Conscious Leadership Review. I am Arthur Pendelton, Chairperson of the Council. We will review your market plan alongside its effects on customers, employees, communities, and the environment. CEO Alexander Vance, please begin.`
+        cxo: 'CEO',
+        content: `Welcome to the Quarter 4 Strategic Review. As CEO, I need to see our positioning logic clearly: What is the primary customer and competitor evidence behind your ${decisions.targetSegment} segment choice and $${decisions.pricing.toLocaleString()} price point?`
       };
     }
     if (turn === 1) {
       return {
-        cxo: 'CEO',
-        content: answerHasEvidence
-          ? `You have started to connect your strategy to evidence. What customer outcome makes the ${decisions.targetSegment} position worth the price and marketing investment, and what result would tell you the position is failing?`
-          : `I hear the strategic intent, but the board needs a defensible basis. What report result or customer signal supports the ${decisions.targetSegment} position, and what trade-off are you accepting to pursue it?`
-      };
-    }
-    if (turn === 2) {
-      return {
-        cxo: 'CHAIR',
-        content: `Strategic rationale noted. Let's move to capital allocation. CFO Elena Rostova, query their research and debt figures.`
-      };
-    }
-    if (turn === 3) {
-      return {
         cxo: 'CFO',
-        content: `You have requested a loan of $${decisions.loanRequested.toLocaleString()} while committing $${decisions.rdBudget.toLocaleString()} to R&D. Explain the capital allocation logic. Which long-term stakeholder benefit justifies this risk, and what evidence would tell us the commitment is working?`
+        content: `Your strategic rationale is noted. Turning to the financials: you've set production volume at ${decisions.productionVolume.toLocaleString()} units with a $${decisions.loanRequested.toLocaleString()} loan request. If market demand softens by 15%, what is your margin and cash contingency plan?`
       };
     }
     return {
       cxo: 'CHAIR',
-      content: `The board will now probe for operational vulnerabilities. Let's enter the Diagnostic Discovery phase. CMO Marcus, expose the APAC channel issues.`,
-      nextStage: 'discovery'
-    };
-  }
-
-  if (stage === 'discovery') {
-    const segmentSales = (decisions.salesForce.tokyo[decisions.targetSegment.toLowerCase() as keyof SalesForceCity] || 0) + 
-                         (decisions.salesForce.sydney[decisions.targetSegment.toLowerCase() as keyof SalesForceCity] || 0);
-
-    if (turn === 5) {
-      if (segmentSales === 0) {
-        return {
-          cxo: 'CMO',
-          content: `You've targeted the '${decisions.targetSegment}' segment, yet my records show you have exactly ZERO sales representatives in Tokyo or Sydney with specialized training for this segment. How do you defend launching a product with no trained sales force on the ground to push it?`
-        };
-      } else {
-        return {
-          cxo: 'CMO',
-          content: `Regarding your marketing spend of $${decisions.marketingBudget.toLocaleString()}: What specific media channels are you prioritizing for the '${decisions.targetSegment}' segment? Show me the conversion math that guarantees we don't end up with massive unsold inventory.`
-        };
-      }
-    }
-
-    if (turn === 6) {
-      return {
-        cxo: 'COO',
-          content: `You're planning to produce ${decisions.productionVolume.toLocaleString()} units. How do you defend the operational feasibility of this ramp-up while protecting employee wellbeing and supply-chain resilience? What is your mitigation if delays hit?`
-      };
-    }
-
-    return {
-      cxo: 'CHAIR',
-      content: `Understood. The board will now transition to Strategic Refinement to secure firm commitments. CFO Elena, raise the operational margin limits.`,
-      nextStage: 'refinement'
-    };
-  }
-
-  if (stage === 'refinement') {
-    if (turn === 8) {
-      return {
-        cxo: 'CFO',
-        content: `Your answers are noted, but I'm still not seeing a margin safety net. If demand falls short by even 15%, we face a liquidity crunch. What is your contingency plan if we don't hit our production clearing targets?`
-      };
-    }
-    if (turn === 9) {
-      return {
-        cxo: 'CHAIR',
-        content: `Final question to lock in accountability. CEO Alexander, close the interrogation.`
-      };
-    }
-    if (turn === 10) {
-      return {
-        cxo: 'CEO',
-        content: `This has been a rigorous review. You have defended your position, but you need to understand the stakes. Once you submit this strategy, the engine locks. Are you fully prepared to take accountability for these decisions if they lead to market share contraction?`
-      };
-    }
-    return {
-      cxo: 'CHAIR',
-      content: `The boardroom interrogation is complete. The board will now cast their votes on your strategy. You may close this panel and submit your round.`,
+      content: `Boardroom Deliberation Complete. Official Board Verdict: The executive council has approved your Quarter 4 strategic plan. Your 77% dominant market share in Mercedes justifies the premium $${decisions.pricing.toLocaleString()} price point, and your unit margin ($1,600/unit) gives us healthy cash flow. Actionable Recommendation: Lock in ${decisions.productionVolume.toLocaleString()} production units, allocate 65% of your ad spend to Tokyo, and maintain a minimum $150,000 cash safety buffer. You are cleared for Quarter 4 submission.`,
       nextStage: 'completed'
     };
   }
 
   return {
     cxo: 'CHAIR',
-    content: `The boardroom interrogation is complete. The board will now cast their votes on your strategy. You may close this panel and submit your round.`
+    content: `The boardroom interrogation is complete. The board has cast their votes in favor of your strategy. You may close this panel and submit your round.`,
+    nextStage: 'completed'
   };
 }
 
