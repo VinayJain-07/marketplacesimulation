@@ -175,8 +175,6 @@ export function getMockResponse(
   
   const userMessages = messages.filter(m => m.role === 'user');
   const turn = userMessages.length;
-  const latestAnswer = userMessages[userMessages.length - 1]?.content.trim() || '';
-  const answerHasEvidence = /\d|because|report|demand|share|sales|margin|stock|cost|cash|customer|compet/i.test(latestAnswer);
 
   if (mode === 'verbal-assessment') {
     const lastAnswer = userMessages[userMessages.length - 1]?.content.trim() || '';

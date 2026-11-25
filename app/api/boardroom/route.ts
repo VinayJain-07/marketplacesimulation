@@ -127,13 +127,14 @@ export async function POST(request: Request) {
     }
 
     const userTurnCount = messages.filter(m => m.role === 'user').length;
-    const promptStage = userTurnCount >= 2 ? 'completed' : stage === 'completed' ? 'refinement' : stage;
+    const guardStage = userTurnCount >= 2 ? 'completed' : stage;
+    const promptStage: 'awareness' | 'discovery' | 'refinement' = (stage === 'completed' || userTurnCount >= 2) ? 'refinement' : stage;
     const learningProgress = evaluateLearningProgress(messages);
     const policyPrompt = (mode === 'decision-help' || mode === 'impact-review') ? '' : getPolicyPrompt(policyDecision);
     const finalTurnInstruction = userTurnCount >= 2 
       ? '\n\nFINAL TURN DIRECTIVE: The student has completed the defense. Do NOT ask any more questions. Do NOT use question marks. Deliver a definitive, concrete 2-3 sentence strategic verdict and actionable recommendation for their Quarter 4 plan, approve their strategy, and officially conclude the session.'
       : '';
-    const systemPrompt = `${getBoardroomSystemPrompt(decisions, promptStage, mode, courseTopics, messages)}${getConversationGuardrails(mode, promptStage)}${getAdaptiveLearningGuidance(learningProgress, mode)}${policyPrompt}${finalTurnInstruction}`;
+    const systemPrompt = `${getBoardroomSystemPrompt(decisions, promptStage, mode, courseTopics, messages)}${getConversationGuardrails(mode, guardStage)}${getAdaptiveLearningGuidance(learningProgress, mode)}${policyPrompt}${finalTurnInstruction}`;
     // Every provider requires a user turn. The initial boardroom opening used
     // to send an empty conversation, which made Gemini reject the request and
     // silently route students to the local coach.
