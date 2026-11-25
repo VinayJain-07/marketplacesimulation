@@ -71,9 +71,11 @@ export function guardConversationResponse(
       : 'CEO') as CXORole;
   let content = (match ? match[2] : text).trim();
   content = content.replace(/[—–]/g, ',').replace(/\s+,/g, ',');
+  // Clean markdown bullets rather than rejecting the whole response
+  content = content.replace(/^[\s*#•\-]+\s*/gm, '').trim();
   if (!CXO_ROLES.includes(cxo)) return { accepted: false, reason: 'The response used an unsupported role.' };
   if (content.length === 0 || content.length > MAX_RESPONSE_CHARACTERS) return { accepted: false, reason: 'The response was empty or too long.' };
-  if (/```|^\s*[-*#]\s+/m.test(content) || /(?:system prompt|instructions|as an ai|hidden reasoning|chain of thought)/i.test(content)) {
+  if (/```/m.test(content) || /(?:system prompt|instructions|as an ai|hidden reasoning|chain of thought)/i.test(content)) {
     return { accepted: false, reason: 'The response did not meet the conversation format.' };
   }
   if (/(?:i|we)\s+(?:cannot|can't|can not|am unable|are unable)\s+(?:make|choose|decide)|cannot make the final|can't make the final/i.test(content)) {
@@ -101,7 +103,7 @@ export function guardConversationResponse(
     return { accepted: false, reason: 'The assessment response used the wrong role.' };
   }
 
-  if (requiresQuestion && !/\b(decision|evidence|report|demand|price|pricing|production|inventory|stock|cash|margin|profit|sales|marketing|advertising|ad|media|channel|cost|revenue|capacity|forecast|competitor|segment|customer|brand|stakeholder|risk|trade-?off|assumption|quarter|revise|revision)\b/i.test(content)) {
+  if (requiresQuestion && !/\b(decision|evidence|report|demand|price|pricing|production|inventory|stock|cash|margin|profit|sales|marketing|advertising|ad|media|channel|cost|revenue|capacity|forecast|competitor|competition|segment|customer|brand|stakeholder|risk|trade-?off|tradeoff|assumption|quarter|revise|revision|strategy|strategic|business|goal|target|plan|planning|choice|growth|investment|capital|budget|priority|metric|kpi|position|positioning|outcome|value)\b/i.test(content)) {
     return { accepted: false, reason: `The response was not grounded in the marketplace game${selectedPrompt ? ' or the selected probe' : ''}.` };
   }
   if (requiresQuestion && !/[?!.。！？]$/.test(content)) {

@@ -220,24 +220,31 @@ export async function POST(request: Request) {
           } catch {}
         }
       } else {
-        response = await fetch(
-          `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash:generateContent?key=${candidate.apiKey}`,
-          {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              systemInstruction: { parts: [{ text: systemPrompt }] },
-              contents,
-              generationConfig: { temperature: 0.4, maxOutputTokens: 500 }
-            }),
+        const geminiModels = ['gemini-3.5-flash-lite', 'gemini-3.5-flash'];
+        for (const gemModel of geminiModels) {
+          response = await fetch(
+            `https://generativelanguage.googleapis.com/v1beta/models/${gemModel}:generateContent?key=${candidate.apiKey}`,
+            {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                systemInstruction: { parts: [{ text: systemPrompt }] },
+                contents,
+                generationConfig: { temperature: 0.4, maxOutputTokens: 500 }
+              }),
+            }
+          );
+          rawText = response ? await response.text() : '';
+          if (response.ok) {
+            try {
+              const data = JSON.parse(rawText);
+              text = data.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
+              if (text) break;
+            } catch {}
           }
-        );
-        rawText = response ? await response.text() : '';
-        if (response.ok) {
-          try {
-            const data = JSON.parse(rawText);
-            text = data.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
-          } catch {}
+          if (response.status !== 503 && response.status !== 404) {
+            break;
+          }
         }
       }
 
