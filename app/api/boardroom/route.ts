@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import { BoardroomMode, getBoardroomSystemPrompt, getMockResponse, Message, SimulationDecisions } from '@/lib/abis-engine';
 import { buildConversationContents, getConversationGuardrails, guardConversationResponse } from '@/lib/conversation-orchestrator';
 import { evaluateLearningProgress, getAdaptiveLearningGuidance } from '@/lib/adaptive-learning';
+import { shouldConcludeHelpMeDecide } from '@/lib/help-me-decide-bank';
 import { messagesToTelemetry } from '@/lib/personalization/telemetry';
 import { buildPlayerState } from '@/lib/personalization/player-model';
 import { getQuestionBank } from '@/lib/personalization/question-bank';
@@ -127,13 +128,22 @@ export async function POST(request: Request) {
     }
 
     const userTurnCount = messages.filter(m => m.role === 'user').length;
-    const guardStage = userTurnCount >= 2 ? 'completed' : stage;
-    const promptStage: 'awareness' | 'discovery' | 'refinement' = (stage === 'completed' || userTurnCount >= 2) ? 'refinement' : stage;
+    const isHelpMode = mode === 'decision-help';
+    const helpCompletion = shouldConcludeHelpMeDecide(messages);
     const learningProgress = evaluateLearningProgress(messages);
+
+    // Adaptive inquiry runs 7 to 12 turns based on student reasoning quality
+    const isAdaptiveComplete = isHelpMode
+      ? helpCompletion.shouldConclude
+      : (userTurnCount >= 12 || (userTurnCount >= 7 && learningProgress.score >= 65));
+
+    const activeTurnStage = userTurnCount < 3 ? 'awareness' : userTurnCount < 6 ? 'discovery' : 'refinement';
+    const guardStage = isAdaptiveComplete ? 'completed' : activeTurnStage;
+    const promptStage: 'awareness' | 'discovery' | 'refinement' = (stage === 'completed' || isAdaptiveComplete) ? 'refinement' : activeTurnStage;
     const policyPrompt = (mode === 'decision-help' || mode === 'impact-review') ? '' : getPolicyPrompt(policyDecision);
-    const finalTurnInstruction = userTurnCount >= 2 
-      ? '\n\nFINAL TURN DIRECTIVE: The student has completed the defense. Do NOT ask any more questions. Do NOT use question marks. Deliver a definitive, concrete 2-3 sentence strategic verdict and actionable recommendation for their Quarter 4 plan, approve their strategy, and officially conclude the session.'
-      : '';
+    const finalTurnInstruction = isAdaptiveComplete 
+      ? '\n\nFINAL TURN DIRECTIVE: The student has completed the 7-12 turn adaptive inquiry. Do NOT ask any more questions. Do NOT use question marks. Deliver a definitive, concrete 2-3 sentence strategic verdict and actionable recommendation for their Quarter 4 plan, approve their strategy, and officially conclude the session.'
+      : `\n\nADAPTIVE INQUIRY DIRECTIVE (Turn ${userTurnCount + 1} of 7-12): Do NOT conclude the session yet. Ask one single concise Socratic follow-up question that challenges the student's reasoning or trade-offs.`;
     const systemPrompt = `${getBoardroomSystemPrompt(decisions, promptStage, mode, courseTopics, messages)}${getConversationGuardrails(mode, guardStage)}${getAdaptiveLearningGuidance(learningProgress, mode)}${policyPrompt}${finalTurnInstruction}`;
     // Every provider requires a user turn. The initial boardroom opening used
     // to send an empty conversation, which made Gemini reject the request and
@@ -290,14 +300,16 @@ export async function POST(request: Request) {
       return mockResponse(`${priorConnectionIssue}${PROVIDER_LABELS[activeCandidate.provider]} returned a response that needs coaching-format cleanup (${guardedResponse.reason}). Using the local conversation engine.`);
     }
 
-    // Dialogue State progression triggers based on turn count or context
+    // Dialogue State progression triggers based on adaptive 7-12 turn inquiry
     let nextStage = stage;
-    const userMessageCount = messages.filter(m => m.role === 'user').length;
-    
-    if (userMessageCount >= 2) {
+    if (isAdaptiveComplete) {
       nextStage = 'completed';
-    } else if (stage === 'awareness' && userMessageCount >= 1) {
+    } else if (userTurnCount < 3) {
+      nextStage = 'awareness';
+    } else if (userTurnCount < 6) {
       nextStage = 'discovery';
+    } else {
+      nextStage = 'refinement';
     }
 
     return NextResponse.json({

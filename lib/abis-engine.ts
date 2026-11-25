@@ -1,4 +1,4 @@
-import { getHelpMeDecidePrompt, getHelpMeDecideResponse } from './help-me-decide-bank';
+import { getHelpMeDecidePrompt, getHelpMeDecideResponse, shouldConcludeHelpMeDecide } from './help-me-decide-bank';
 import type { Difficulty, SkillId } from './personalization/types';
 
 export type CXORole = 'CEO' | 'CFO' | 'CMO' | 'COO' | 'CHAIR';
@@ -196,20 +196,55 @@ export function getMockResponse(
       };
     }
 
-    if ((turn === 1 && !hasEvidence) || turn === 2) {
+    if (turn === 1 || turn === 2) {
       return {
         cxo: 'CHAIR',
-        content: `Now anchor that thought in evidence. What one number from the reports best supports your decision?`
+        content: `Now anchor that thought in evidence. What one number from the reports best supports your unit contribution margin and production plan?`
       };
     }
 
-    if (turn >= 2) {
+    if (turn === 3) {
+      return {
+        cxo: 'CHAIR',
+        content: `With a marketing budget of $${decisions.marketingBudget.toLocaleString()}, how will you build sufficient brand awareness to clear your production volume of ${decisions.productionVolume.toLocaleString()} units?`
+      };
+    }
+
+    if (turn === 4) {
+      return {
+        cxo: 'CHAIR',
+        content: `If market demand drops 15% below your forecast, how will your inventory holding costs and cash buffer absorb the shock?`
+      };
+    }
+
+    if (turn === 5) {
+      return {
+        cxo: 'CHAIR',
+        content: `How does your loan request of $${decisions.loanRequested.toLocaleString()} affect your interest coverage and financial flexibility if sales are delayed?`
+      };
+    }
+
+    if (turn === 6) {
+      return {
+        cxo: 'CHAIR',
+        content: `What specific competitor move in the ${decisions.targetSegment} segment would force you to revise your pricing or marketing allocation next quarter?`
+      };
+    }
+
+    const shouldConcludeAssessment = turn >= 12 || (turn >= 7 && hasEvidence && answerWords >= 8);
+    if (shouldConcludeAssessment) {
       return {
         cxo: 'CHAIR',
         content: `Decision Defense Complete. Final Verdict: Your decision to prioritize the ${decisions.targetSegment} segment at $${decisions.pricing.toLocaleString()} with ${decisions.productionVolume.toLocaleString()} units is strategically sound. You have articulated the link between segment willingness-to-pay and unit contribution margin ($1,600/unit). Actionable Recommendation: Lock in an ending cash buffer of at least $150,000 to defend against competitor rebates. You are cleared for Quarter 4 submission.`,
         nextStage: 'completed'
       };
     }
+
+    return {
+      cxo: 'CHAIR',
+      content: `Let's test the trade-off. What key assumption in your Quarter 4 plan carries the greatest downside risk if competitors discount aggressively?`,
+      nextStage: turn < 3 ? 'awareness' : turn < 6 ? 'discovery' : 'refinement'
+    };
   }
 
   if (mode === 'decision-help') {
@@ -229,9 +264,11 @@ export function getMockResponse(
         content: `Expected demand is ${context.match(/student range is (\d+\/(\d+)\/\d+)/)?.[2] || 'the middle'} units, with moderate confidence. Previous demand and Nomad stock-outs support testing modest upside, while the capacity figure should be checked against the high case. Which assumption would you test first: competitor price response or demand recovery?`
       };
     }
+    const completion = shouldConcludeHelpMeDecide(messages);
     return {
       cxo: 'CHAIR',
-      content: getHelpMeDecideResponse(context, messages)
+      content: getHelpMeDecideResponse(context, messages),
+      nextStage: completion.shouldConclude ? 'completed' : (turn < 3 ? 'awareness' : turn < 6 ? 'discovery' : 'refinement')
     };
   }
 
@@ -248,10 +285,50 @@ export function getMockResponse(
         content: `Your strategic rationale is noted. Turning to the financials: you've set production volume at ${decisions.productionVolume.toLocaleString()} units with a $${decisions.loanRequested.toLocaleString()} loan request. If market demand softens by 15%, what is your margin and cash contingency plan?`
       };
     }
+    if (turn === 2) {
+      return {
+        cxo: 'CMO',
+        content: `Looking at our advertising: how will your $${decisions.marketingBudget.toLocaleString()} marketing spend build sufficient brand equity to clear ${decisions.productionVolume.toLocaleString()} units against competitor ad frequency?`
+      };
+    }
+    if (turn === 3) {
+      return {
+        cxo: 'COO',
+        content: `From an operations perspective, how does your daily capacity schedule protect us from stock-outs without creating expensive excess inventory?`
+      };
+    }
+    if (turn === 4) {
+      return {
+        cxo: 'CEO',
+        content: `Regarding product R&D: which specific features differentiate our brand for the ${decisions.targetSegment} buyer relative to competitor offerings?`
+      };
+    }
+    if (turn === 5) {
+      return {
+        cxo: 'CFO',
+        content: `What ending cash safety buffer will you maintain at the end of Quarter 4 to protect against sudden market changes or competitor price wars?`
+      };
+    }
+    if (turn === 6) {
+      return {
+        cxo: 'CHAIR',
+        content: `Across your cross-functional plan, what is the single largest trade-off you are accepting between margin growth and market share?`
+      };
+    }
+
+    const shouldConcludeBoardroom = turn >= 12 || (turn >= 7 && turn % 2 === 0);
+    if (shouldConcludeBoardroom) {
+      return {
+        cxo: 'CHAIR',
+        content: `Boardroom Deliberation Complete. Official Board Verdict: The executive council has approved your Quarter 4 strategic plan. Your 77% dominant market share in Mercedes justifies the premium $${decisions.pricing.toLocaleString()} price point, and your unit margin ($1,600/unit) gives us healthy cash flow. Actionable Recommendation: Lock in ${decisions.productionVolume.toLocaleString()} production units, allocate 65% of your ad spend to Tokyo, and maintain a minimum $150,000 cash safety buffer. You are cleared for Quarter 4 submission.`,
+        nextStage: 'completed'
+      };
+    }
+
     return {
       cxo: 'CHAIR',
-      content: `Boardroom Deliberation Complete. Official Board Verdict: The executive council has approved your Quarter 4 strategic plan. Your 77% dominant market share in Mercedes justifies the premium $${decisions.pricing.toLocaleString()} price point, and your unit margin ($1,600/unit) gives us healthy cash flow. Actionable Recommendation: Lock in ${decisions.productionVolume.toLocaleString()} production units, allocate 65% of your ad spend to Tokyo, and maintain a minimum $150,000 cash safety buffer. You are cleared for Quarter 4 submission.`,
-      nextStage: 'completed'
+      content: `What observable result in Quarter 5 would trigger an immediate pivot in your pricing or production volume?`,
+      nextStage: turn < 3 ? 'awareness' : turn < 6 ? 'discovery' : 'refinement'
     };
   }
 

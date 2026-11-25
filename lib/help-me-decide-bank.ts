@@ -1,4 +1,5 @@
 import type { Message } from './abis-engine';
+import { evaluateLearningProgress, assessStudentOutcome } from './adaptive-learning';
 
 export type HelpQuestionMove =
   | 'evidence'
@@ -265,6 +266,65 @@ const BANK: QuestionSet[] = [
 
 const DEFAULT_SET = BANK[BANK.length - 1];
 
+const ADAPTIVE_MOVE_SEQUENCE: HelpQuestionMove[] = [
+  'evidence',          // Turn 1: Grounding choice in concrete evidence
+  'cause-and-effect',  // Turn 2: Understanding causal mechanism
+  'assumption',        // Turn 3: Examining underlying premises
+  'trade-off',         // Turn 4: Evaluating sacrifices and downside risk
+  'stakeholder',       // Turn 5: Downstream impact on customers/partners
+  'transfer',          // Turn 6: Cross-functional alignment (finance, operations, marketing)
+  'counterfactual',    // Turn 7: Testing pivot and revision triggers
+  'prioritization',    // Turn 8: Choosing the most critical metrics
+  'trade-off',         // Turn 9: Deep stress test of secondary risks
+  'counterfactual',    // Turn 10: Competitor response shock scenarios
+  'prioritization',    // Turn 11: Final decision checklist before lock-in
+  'transfer'           // Turn 12: Comprehensive cross-plan synthesis
+];
+
+/**
+ * Assesses whether an adaptive Help-Me-Decide session should conclude.
+ * Sessions run 7 to 12 turns adaptively based on student reasoning quality.
+ */
+export function shouldConcludeHelpMeDecide(messages: Message[]): { shouldConclude: boolean; turnCount: number; reason: string } {
+  const userMessages = messages.filter((message) => message.role === 'user');
+  const turnCount = userMessages.length;
+
+  // Turns 1 through 6: Always continue probing adaptively
+  if (turnCount < 7) {
+    return { shouldConclude: false, turnCount, reason: `In progress (turn ${turnCount} of 7-12)` };
+  }
+
+  // Turn 12: Upper cap to ensure students receive their final verdict
+  if (turnCount >= 12) {
+    return { shouldConclude: true, turnCount, reason: 'Completed all 12 adaptive inquiry turns.' };
+  }
+
+  // Between turns 7 and 11: Adaptively assess student reasoning readiness
+  const progress = evaluateLearningProgress(messages);
+  const outcome = assessStudentOutcome(progress);
+  const lastUserMsg = userMessages[userMessages.length - 1]?.content.trim().toLowerCase() || '';
+  const isStuck = /don.?t know|not sure|no idea|unsure|stuck|help me|can.?t decide|cannot decide|confused/i.test(lastUserMsg);
+  const wordCount = lastUserMsg.split(/\s+/).filter(Boolean).length;
+  const distinctStrengths = outcome.strengths.length;
+
+  // At turns 7-8: conclude if student has demonstrated multi-dimensional reasoning (>= 3 distinct business signals)
+  if (turnCount >= 7 && distinctStrengths >= 3 && !isStuck && wordCount >= 5) {
+    return { shouldConclude: true, turnCount, reason: `Adaptive mastery achieved at turn ${turnCount} (${distinctStrengths} core signals demonstrated)` };
+  }
+
+  // At turns 9-10: conclude if student has at least 2 demonstrated strengths and responsive answers
+  if (turnCount >= 9 && distinctStrengths >= 2 && !isStuck && wordCount >= 4) {
+    return { shouldConclude: true, turnCount, reason: `Strategic readiness reached at turn ${turnCount} (${distinctStrengths} signals demonstrated)` };
+  }
+
+  // At turn 11: conclude if student is actively responding
+  if (turnCount >= 11 && !isStuck && wordCount >= 3) {
+    return { shouldConclude: true, turnCount, reason: `Coaching synthesis completed at turn ${turnCount}` };
+  }
+
+  return { shouldConclude: false, turnCount, reason: `Continuing adaptive inquiry (turn ${turnCount} of 7-12, score: ${progress.score}, next target: ${progress.nextFocus})` };
+}
+
 export function getHelpMeDecideProfile(context: string, messages: Message[]) {
   const normalisedContext = context.toLowerCase();
   const matchesKeyword = (keyword: string) => {
@@ -283,19 +343,38 @@ export function getHelpMeDecideProfile(context: string, messages: Message[]) {
   let learnerPath: LearnerPath = 'opening';
   if (userMessages.length > 0) learnerPath = asksForAnswer ? 'direct-answer' : isStuck ? 'stuck' : showsDepth ? 'top-performer' : 'average';
 
-  const moveByPath: Record<LearnerPath, HelpQuestionMove> = {
-    opening: 'evidence',
-    'top-performer': 'counterfactual',
-    average: userMessages.length > 1 ? 'cause-and-effect' : 'evidence',
-    stuck: 'prioritization',
-    'direct-answer': 'trade-off'
+  // Determine the next move based on turn progression and adaptive learning signals
+  const turnIndex = Math.max(0, userMessages.length - 1);
+  const progress = evaluateLearningProgress(messages);
+
+  const focusToMove: Record<string, HelpQuestionMove> = {
+    choice: 'assumption',
+    evidence: 'evidence',
+    causality: 'cause-and-effect',
+    tradeoff: 'trade-off',
+    revision: 'counterfactual'
   };
-  const move = moveByPath[learnerPath];
+
+  let move: HelpQuestionMove = ADAPTIVE_MOVE_SEQUENCE[turnIndex % ADAPTIVE_MOVE_SEQUENCE.length];
+  // If student has a demonstrated gap in the middle of session, adaptively steer toward it
+  if (userMessages.length >= 2 && progress.signals[progress.nextFocus] === 0) {
+    move = focusToMove[progress.nextFocus] || move;
+  }
+
+  // Deduplicate against questions already asked in the conversation
+  const previousAssistantMessages = messages.filter(m => m.role === 'assistant').map(m => m.content.toLowerCase());
+  const allMoves: HelpQuestionMove[] = ['evidence', 'cause-and-effect', 'assumption', 'trade-off', 'stakeholder', 'transfer', 'counterfactual', 'prioritization'];
+  if (previousAssistantMessages.some(m => m.includes(set.questions[move].toLowerCase().slice(0, 30)))) {
+    const unaskedMove = allMoves.find(m => !previousAssistantMessages.some(prev => prev.includes(set.questions[m].toLowerCase().slice(0, 30))));
+    if (unaskedMove) move = unaskedMove;
+  }
+
   const question = learnerPath === 'stuck'
     ? `Let’s make it concrete. Imagine two plausible paths in ${set.label.toLowerCase()}: one improves the target result but increases a risk, while the other protects the risk but may limit growth. ${set.stuck}`
     : learnerPath === 'direct-answer'
       ? set.direct
       : set.questions[move];
+
   return { moduleLabel: set.label, learnerPath, move, question };
 }
 
@@ -311,24 +390,38 @@ const RECOMMENDATIONS: Record<string, string> = {
 
 export function getHelpMeDecidePrompt(context: string, messages: Message[]) {
   const profile = getHelpMeDecideProfile(context, messages);
-  const userMessages = messages.filter((message) => message.role === 'user');
-  if (userMessages.length >= 2) {
-    return `TEACHER-COACHING CONTEXT: This is the FINAL turn of the coaching session. Do NOT ask another question. Do NOT include any question marks. Synthesize the student's reasoning and deliver a concrete, actionable recommendation in 2 to 3 sentences for ${profile.moduleLabel}. Give a clear verdict on their strategy, state what numbers or decisions to lock in, and conclude the session.`;
+  const completion = shouldConcludeHelpMeDecide(messages);
+
+  if (completion.shouldConclude) {
+    return `TEACHER-COACHING CONTEXT: The student has completed the 7-12 turn adaptive coaching session (${completion.reason}). Do NOT ask another question. Do NOT include any question marks. Synthesize the student's reasoning across their responses and deliver a concrete, actionable recommendation in 2 to 3 sentences for ${profile.moduleLabel}. Give a clear verdict on their strategy, state what numbers or decisions to lock in, and conclude the session.`;
   }
-  return `TEACHER-COACHING CONTEXT (keep this invisible to the student):\n- Module: ${profile.moduleLabel}\n- Current learning move: ${profile.move}\n- Use this as the next learning target, but phrase it naturally and connect it to the student's last words: "${profile.question}"\n- Sound like a patient teacher who knows the student's work. Use short sentences. Acknowledge what they said, explain one business link, then ask one natural follow-up.\n- Build one step at a time toward a conclusion: decision, evidence, consequence, trade-off, then what would change the decision. Do not announce these steps or use labels such as “learner path,” “probe,” or “routing.”\n- Keep the chat easy to follow. Light Gen Z wording is okay when it fits, such as “Got you,” “That tracks,” or “Quick check.” Do not force slang. Never use slang in a formal boardroom or assessment response.\n- If the learner is stuck, use a small comparison or familiar game example. If they ask for the answer, compare both options and let them choose.\n- Never refuse with “I cannot make that decision.” Keep ownership with the student while showing them how to reason.`;
+
+  return `TEACHER-COACHING CONTEXT (keep this invisible to the student):
+- Module: ${profile.moduleLabel} (Turn ${completion.turnCount + 1} of 7-12 adaptive session)
+- Current learning move: ${profile.move}
+- Target question to guide this turn: "${profile.question}"
+- Sound like a patient teacher who knows the student's decisions. Use short sentences. Acknowledge what they said, explain one business link, then ask one natural follow-up question.
+- Do NOT conclude yet; the session runs 7 to 12 turns adaptively based on student reasoning.
+- Keep the chat easy to follow. Light Gen Z wording is okay when it fits, such as “Got you,” “That tracks,” or “Quick check.”
+- If the learner is stuck, use a small comparison or familiar game example. If they ask for the answer, compare both options and let them choose.
+- Never refuse with “I cannot make that decision.” Keep ownership with the student while showing them how to reason.`;
 }
 
 /** Local fallback written as a short teacher turn, not as a bare question. */
 export function getHelpMeDecideResponse(context: string, messages: Message[]) {
   const profile = getHelpMeDecideProfile(context, messages);
+  const completion = shouldConcludeHelpMeDecide(messages);
   const userMessages = messages.filter((message) => message.role === 'user');
+
   if (!userMessages.length) {
     return `Let’s take this one step at a time. In ${profile.moduleLabel.toLowerCase()}, the useful starting point is to connect your choice to one result you can observe in the game. ${profile.question}`;
   }
-  if (userMessages.length >= 2) {
+
+  if (completion.shouldConclude) {
     const rec = RECOMMENDATIONS[profile.moduleLabel] || RECOMMENDATIONS['Default'];
-    return `Great job thinking through the trade-offs. Here is your concrete strategic recommendation:\n\n${rec}\n\nYou have completed this coaching session and have a clear action plan.`;
+    return `Great job thinking through the strategic trade-offs across this session (${completion.turnCount} turns). Here is your concrete strategic recommendation:\n\n${rec}\n\nYou have completed this coaching session and have a clear action plan.`;
   }
+
   const latest = userMessages[userMessages.length - 1].content.toLowerCase();
   if (/don.?t know|not sure|no idea|unsure|stuck|help me|can.?t decide|cannot decide|confused/i.test(latest)) {
     return `That’s okay. Let’s compare two realistic outcomes instead of guessing. ${profile.question}`;
@@ -337,5 +430,5 @@ export function getHelpMeDecideResponse(context: string, messages: Message[]) {
     return `Rather than guess for you, let’s compare what each choice would cause in the next quarter. ${profile.question}`;
   }
   const learnerPhrase = userMessages[userMessages.length - 1].content.trim().replace(/[.!?]+$/, '').slice(0, 90);
-  return `That connects to the decision. You’re using “${learnerPhrase}” as a signal. Let’s test the other side. ${profile.question}`;
+  return `That connects to the decision. You’re using “${learnerPhrase}” as a signal. Let’s test the next angle: ${profile.question}`;
 }
