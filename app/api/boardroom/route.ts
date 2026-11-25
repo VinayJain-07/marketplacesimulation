@@ -187,14 +187,16 @@ export async function POST(request: Request) {
             model: process.env.OPENROUTER_MODEL?.trim() || 'nvidia/nemotron-3.5-lightning:free',
             messages: [{ role: 'system', content: systemPrompt }, ...providerMessages.map(message => ({ role: message.role === 'assistant' ? 'assistant' : 'user', content: message.content }))],
             temperature: 0.4,
-            max_tokens: 500,
+            max_tokens: 700,
+            reasoning: { max_tokens: 0 },
           }),
         });
         rawText = response ? await response.text() : '';
         if (response.ok) {
           try {
             const data = JSON.parse(rawText);
-            text = data.choices?.[0]?.message?.content?.trim();
+            const choice = data.choices?.[0];
+            text = (choice?.message?.content || choice?.text || choice?.message?.reasoning || '').trim();
           } catch {}
         }
       } else if (activeProvider === 'anthropic') {
@@ -255,7 +257,9 @@ export async function POST(request: Request) {
         // Some providers return non-JSON error bodies; the status is still useful.
       }
 
-      lastFailureMessage = `${PROVIDER_LABELS[activeProvider]} connection was rejected (${response?.status || 500}).${detail}`;
+      lastFailureMessage = response?.ok
+        ? `${PROVIDER_LABELS[activeProvider]} returned no message text.`
+        : `${PROVIDER_LABELS[activeProvider]} connection was rejected (${response?.status || 500}).${detail}`;
       providerFailures.push(lastFailureMessage);
       providerMessage = getProviderMessage(candidate);
 
